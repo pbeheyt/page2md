@@ -1,0 +1,31 @@
+{
+  "name": "page2md",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "postinstall": "wxt prepare",
+    "dev": "wxt",
+    "dev:firefox": "wxt -b firefox",
+    "build": "wxt build",
+    "build:firefox": "wxt build -b firefox",
+    "zip": "wxt zip",
+    "zip:firefox": "wxt zip -b firefox",
+    "install:local": "npm run build && npm run build:firefox && npm run zip:firefox && mkdir -p ~/.local/share/browser-extensions/page2md && rm -rf ~/.local/share/browser-extensions/page2md/chrome ~/.local/share/browser-extensions/page2md/firefox && cp -r .output/chrome-mv3 ~/.local/share/browser-extensions/page2md/chrome && cp -r .output/firefox-mv2 ~/.local/share/browser-extensions/page2md/firefox && cp .output/page2md-${npm_package_version}-firefox.zip ~/.local/share/browser-extensions/page2md/page2md.xpi",
+    "sign:firefox": "bash -c 'set -euo pipefail; set -a; source .env; set +a; npm run build:firefox && npx --yes web-ext sign --channel=unlisted --source-dir=.output/firefox-mv2 --artifacts-dir=\"$HOME/.local/share/browser-extensions/page2md\" --api-key=\"$AMO_JWT_ISSUER\" --api-secret=\"$AMO_JWT_SECRET\"'",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "turndown": "^7.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/turndown": "^5.0.5",
+    "jsdom": "^25.0.1",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8",
+    "wxt": "^0.19.25"
+  }
+}
