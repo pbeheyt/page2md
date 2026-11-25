@@ -2,15 +2,16 @@ import { defineConfig } from 'wxt';
 
 export default defineConfig({
   srcDir: 'src',
-  manifest: ({ browser }) => ({
+  manifest: ({ browser, manifestVersion }) => ({
     name: 'Page2MD',
-    description: 'Copie le contenu principal d’une page web ou d’une sélection en Markdown propre pour LLM.',
+    description:
+      'Copie le contenu principal d’une page web ou d’une sélection en Markdown propre pour LLM.',
     permissions: ['activeTab', 'scripting', 'contextMenus', 'clipboardWrite'],
     action: {
-      default_title: 'Copier la page en Markdown (Ctrl+Shift+L)',
+      default_title: 'Copier la page en Markdown',
     },
     commands: {
-      [browser === 'firefox' ? '_execute_browser_action' : '_execute_action']: {
+      [manifestVersion === 2 ? '_execute_browser_action' : '_execute_action']: {
         suggested_key: {
           default: 'Ctrl+Shift+L',
         },
