@@ -7,12 +7,12 @@ export default defineConfig({
     description: 'Copie le contenu principal d’une page web ou d’une sélection en Markdown propre pour LLM.',
     permissions: ['activeTab', 'scripting', 'contextMenus', 'clipboardWrite'],
     action: {
-      default_title: 'Copier la page en Markdown (Ctrl+Shift+X)',
+      default_title: 'Copier la page en Markdown (Ctrl+Shift+L)',
     },
     commands: {
       [browser === 'firefox' ? '_execute_browser_action' : '_execute_action']: {
         suggested_key: {
-          default: 'Ctrl+Shift+X',
+          default: 'Ctrl+Shift+L',
         },
         description: 'Copier la page (ou la sélection) en Markdown',
       },

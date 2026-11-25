@@ -4,7 +4,7 @@ Extension navigateur (Chrome MV3 & Firefox MV2) pour copier le contenu principal
 
 ## Utilisation
 
-- **Raccourci clavier** : `Ctrl+Shift+X` (copie la sélection si du texte est surligné, sinon la page entière).
+- **Raccourci clavier** : `Ctrl+Shift+L` (copie la sélection si du texte est surligné, sinon la page entière).
 - **Clic sur l'icône** : même comportement.
 - **Clic droit** : *Copier la page en Markdown* ou *Copier la sélection en Markdown*.
 
