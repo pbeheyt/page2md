@@ -175,6 +175,31 @@ function shouldDropEmptyContainer(
   );
 }
 
+function getEffectiveChildNodes(liveParent: Element): Iterable<Node> {
+  if (liveParent.tagName.toLowerCase() === 'slot') {
+    const slotEl = liveParent as HTMLSlotElement;
+    if (typeof slotEl.assignedNodes === 'function') {
+      const assigned = slotEl.assignedNodes({ flatten: true });
+      if (assigned.length > 0) {
+        return assigned;
+      }
+    }
+  }
+  if (liveParent.shadowRoot) {
+    return liveParent.shadowRoot.childNodes;
+  }
+  return liveParent.childNodes;
+}
+
+function tryGetSameOriginIframeBody(iframeEl: Element): HTMLElement | null {
+  try {
+    const contentDoc = (iframeEl as HTMLIFrameElement).contentDocument;
+    return contentDoc?.body ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function cloneVisibleChildren(
   liveParent: Element,
   cloneParent: Element,
@@ -187,7 +212,7 @@ function cloneVisibleChildren(
     return;
   }
 
-  for (const child of liveParent.childNodes) {
+  for (const child of getEffectiveChildNodes(liveParent)) {
     if (child.nodeType === Node.TEXT_NODE) {
       if (!parentVisibilityHidden) {
         cloneParent.appendChild(ctx.targetDoc.createTextNode((child as Text).data));
@@ -205,6 +230,27 @@ function cloneVisibleChildren(
     if (tag === 'math') {
       if (!parentVisibilityHidden) {
         appendMathPlaceholder(liveEl, cloneParent, ctx.targetDoc);
+      }
+      continue;
+    }
+
+    if (tag === 'iframe') {
+      if (!parentVisibilityHidden) {
+        const iframeBody = tryGetSameOriginIframeBody(liveEl);
+        if (iframeBody) {
+          const wrapper = ctx.targetDoc.createElement('div');
+          cloneVisibleChildren(
+            iframeBody,
+            wrapper,
+            { targetDoc: ctx.targetDoc, win: iframeBody.ownerDocument.defaultView },
+            false,
+            insidePre,
+            depth + 1
+          );
+          if (hasMeaningfulContent(wrapper)) {
+            cloneParent.appendChild(wrapper);
+          }
+        }
       }
       continue;
     }

@@ -24,8 +24,13 @@ describe('runCopy', () => {
 
     expect(result.ok).toBe(true);
     expect(result.wordCount).toBeGreaterThan(0);
+    expect(result.tokenEstimate).toBeGreaterThan(0);
     expect(copySpy).toHaveBeenCalledOnce();
-    expect(toastSpy).toHaveBeenCalledWith(expect.stringContaining('Page copiée'), 'success', document);
+    expect(toastSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/Page copiée · ~\d+ mots? · ~[\d,]+k? tokens?/),
+      'success',
+      document
+    );
   });
 
   it('retourne unsupported_document sur un document XML', async () => {

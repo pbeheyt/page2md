@@ -7,6 +7,7 @@ export interface CopyResult {
   reason?: 'empty' | 'clipboard_error' | 'unsupported_document' | 'unexpected_error' | 'busy';
   source?: ExtractedDocument['source'];
   wordCount?: number;
+  tokenEstimate?: number;
 }
 
 export type RunnerInvocationResult =

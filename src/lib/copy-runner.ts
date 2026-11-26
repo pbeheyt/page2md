@@ -10,13 +10,27 @@ import { showToast, type ToastVariant } from '@/lib/toast';
 
 const activeCopyDocuments = new WeakSet<Document>();
 
+function estimateTokens(markdown: string): number {
+  return Math.max(1, Math.round(markdown.length / 4));
+}
+
+function formatTokenCount(tokens: number): string {
+  if (tokens >= 1000) {
+    const k = (tokens / 1000).toFixed(1).replace(/\.0$/, '').replace('.', ',');
+    return `~${k}k tokens`;
+  }
+  const unit = tokens > 1 ? 'tokens' : 'token';
+  return `~${tokens} ${unit}`;
+}
+
 function formatCopySuccessMessage(
   source: ExtractedDocument['source'],
-  wordCount: number
+  wordCount: number,
+  tokenEstimate: number
 ): string {
   const scope = source === 'selection' ? 'Sélection copiée' : 'Page copiée';
   const unit = wordCount > 1 ? 'mots' : 'mot';
-  return `${scope} · ~${wordCount} ${unit}`;
+  return `${scope} · ~${wordCount} ${unit} · ${formatTokenCount(tokenEstimate)}`;
 }
 
 function safeShowToast(message: string, variant: ToastVariant, doc: Document): void {
@@ -57,8 +71,13 @@ export async function runCopy(
     }
 
     const wordCount = countWords(markdown);
-    safeShowToast(formatCopySuccessMessage(extracted.source, wordCount), 'success', doc);
-    return { ok: true, source: extracted.source, wordCount };
+    const tokenEstimate = estimateTokens(markdown);
+    safeShowToast(
+      formatCopySuccessMessage(extracted.source, wordCount, tokenEstimate),
+      'success',
+      doc
+    );
+    return { ok: true, source: extracted.source, wordCount, tokenEstimate };
   } catch (error) {
     console.warn('[page2md] Unexpected copy error:', error);
     safeShowToast('Erreur lors de la copie en Markdown.', 'error', doc);
