@@ -219,4 +219,16 @@ describe('createBackgroundController', () => {
     vi.advanceTimersByTime(3000);
     expect(mocks.setBadgeText).toHaveBeenCalledTimes(1);
   });
+
+  it('rejette un objet RunnerInvocationResult malformé sans lever de TypeError', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { runtime, mocks } = createMockRuntime();
+    mocks.executeScript.mockResolvedValueOnce([{ result: { status: 'ok' } }]);
+
+    const controller = createBackgroundController(runtime);
+    await expect(controller.triggerCopy(11, 'page')).resolves.toBeUndefined();
+
+    expect(warnSpy).toHaveBeenCalledOnce();
+    expect(mocks.setBadgeText).toHaveBeenCalledWith({ tabId: 11, text: '!' });
+  });
 });

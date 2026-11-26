@@ -1,11 +1,17 @@
 import { MATH_PLACEHOLDER_ATTR, NON_CONTENT_TAG_SET } from '@/lib/constants';
+import {
+  ANCHOR_ONLY_LABEL_RE,
+  ATTACHING_PUNCTUATION_RE,
+  computeBacktickFence,
+  DECIMAL_TAIL_RE,
+  OPENING_PUNCTUATION_END_RE,
+  SIGN_PREFIX_CHAR_RE,
+  WORD_OR_DIGIT_START_RE,
+} from '@/lib/markdown-syntax';
+import { collapseWhitespace } from '@/lib/text';
 import { cleanLinkHref } from '@/lib/url';
 
-const ATTACHING_PUNCTUATION_RE = /^[,.;:!?)\]%»”’]/;
-const OPENING_PUNCTUATION_END_RE = /[([«“‘/'’]$/;
 const CURRENCY_PREFIX_END_RE = /(?:^|\s)[$€£¥#@~]$/;
-const DECIMAL_TAIL_RE = /\d[.,]$/;
-const ANCHOR_ONLY_LABEL_RE = /^(?:#|¶|§|🔗)$/;
 const MAX_TABLE_SPAN = 100;
 
 const CELL_BOUNDARY_TAGS: ReadonlySet<string> = new Set([
@@ -34,13 +40,7 @@ interface CellSegment {
 }
 
 function formatInlineCode(codeText: string): string {
-  let maxRun = 0;
-  for (const match of codeText.matchAll(/`+/g)) {
-    if (match[0].length > maxRun) {
-      maxRun = match[0].length;
-    }
-  }
-  const fence = '`'.repeat(maxRun + 1);
+  const fence = computeBacktickFence(codeText, 1);
   const needsPadding =
     codeText.startsWith('`') ||
     codeText.endsWith('`') ||
@@ -49,10 +49,10 @@ function formatInlineCode(codeText: string): string {
 }
 
 function escapeTableCell(text: string): string {
-  return text
-    .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/(\\*)\|/g, (_match, slashes: string) => `${slashes}${slashes}\\|`);
+  return collapseWhitespace(text).replace(
+    /(\\*)\|/g,
+    (_match, slashes: string) => `${slashes}${slashes}\\|`
+  );
 }
 
 function joinCellSegments(segments: readonly CellSegment[]): string {
@@ -65,8 +65,8 @@ function joinCellSegments(segments: readonly CellSegment[]): string {
     }
 
     const attachesToPrefix =
-      (CURRENCY_PREFIX_END_RE.test(result) && /^[0-9A-Za-zÀ-ÿ]/.test(segment.text)) ||
-      (/^[+-]$/.test(result) && /^\d/.test(segment.text));
+      (CURRENCY_PREFIX_END_RE.test(result) && WORD_OR_DIGIT_START_RE.test(segment.text)) ||
+      (SIGN_PREFIX_CHAR_RE.test(result) && /^\d/.test(segment.text));
 
     const needsSpace =
       result.length > 0 &&
@@ -85,11 +85,32 @@ function joinCellSegments(segments: readonly CellSegment[]): string {
   return result;
 }
 
-function collectCellSegments(node: Node, segments: CellSegment[], boundary: boolean): void {
+function collectAndJoinChildren(parent: Element): string {
+  const segments: CellSegment[] = [];
+  for (const child of parent.childNodes) {
+    collectCellSegments(child, segments);
+  }
+  return joinCellSegments(segments);
+}
+
+function formatCellLink(el: Element): string | null {
+  const label = collectAndJoinChildren(el).trim();
+  if (!label || ANCHOR_ONLY_LABEL_RE.test(label)) {
+    return null;
+  }
+  const href = cleanLinkHref(el.getAttribute('href') ?? '');
+  if (!href) {
+    return label;
+  }
+  const escapedLabel = label.replace(/([[\]])/g, '\\$1');
+  return `[${escapedLabel}](${href})`;
+}
+
+function collectCellSegments(node: Node, segments: CellSegment[]): void {
   if (node.nodeType === Node.TEXT_NODE) {
     const data = (node as Text).data;
     if (data.trim()) {
-      segments.push({ text: data, boundary });
+      segments.push({ text: data, boundary: false });
     } else if (data.length > 0 && segments.length > 0) {
       segments.push({ text: ' ', boundary: false });
     }
@@ -128,11 +149,7 @@ function collectCellSegments(node: Node, segments: CellSegment[], boundary: bool
   }
 
   if (tag === 'del' || tag === 's') {
-    const delSegments: CellSegment[] = [];
-    for (const child of el.childNodes) {
-      collectCellSegments(child, delSegments, false);
-    }
-    const trimmed = joinCellSegments(delSegments).trim();
+    const trimmed = collectAndJoinChildren(el).trim();
     if (trimmed) {
       segments.push({ text: `~~${trimmed}~~`, boundary: true });
     }
@@ -140,38 +157,21 @@ function collectCellSegments(node: Node, segments: CellSegment[], boundary: bool
   }
 
   if (tag === 'a') {
-    const linkSegments: CellSegment[] = [];
-    for (const child of el.childNodes) {
-      collectCellSegments(child, linkSegments, false);
+    const formatted = formatCellLink(el);
+    if (formatted) {
+      segments.push({ text: formatted, boundary: true });
     }
-    const label = joinCellSegments(linkSegments).trim();
-    if (!label || ANCHOR_ONLY_LABEL_RE.test(label)) {
-      return;
-    }
-    const href = cleanLinkHref(el.getAttribute('href') ?? '');
-    const escapedLabel = label.replace(/([[\]])/g, '\\$1');
-    const formatted = href ? `[${escapedLabel}](${href})` : label;
-    segments.push({ text: formatted, boundary: true });
     return;
   }
 
-  const isBoundary = CELL_BOUNDARY_TAGS.has(tag);
-  const childSegments: CellSegment[] = [];
-  for (const child of el.childNodes) {
-    collectCellSegments(child, childSegments, false);
-  }
-  const combined = joinCellSegments(childSegments);
+  const combined = collectAndJoinChildren(el);
   if (combined) {
-    segments.push({ text: combined, boundary: isBoundary || boundary });
+    segments.push({ text: combined, boundary: CELL_BOUNDARY_TAGS.has(tag) });
   }
 }
 
 function formatTableCell(cell: Element): string {
-  const segments: CellSegment[] = [];
-  for (const child of cell.childNodes) {
-    collectCellSegments(child, segments, false);
-  }
-  return escapeTableCell(joinCellSegments(segments));
+  return escapeTableCell(collectAndJoinChildren(cell));
 }
 
 function parseColSpan(cell: Element): number {
@@ -211,10 +211,15 @@ function collectSectionRows(sectionEl: Element): Element[] {
   return rows;
 }
 
-function extractTableSections(table: HTMLElement): Element[][] {
+function extractTableSections(table: Element): Element[][] {
   const headSections: Element[][] = [];
   const bodySections: Element[][] = [];
   const footSections: Element[][] = [];
+  const sectionTargets: Record<string, Element[][]> = {
+    thead: headSections,
+    tbody: bodySections,
+    tfoot: footSections,
+  };
   let looseBodyRows: Element[] = [];
 
   const flushLooseBodyRows = (): void => {
@@ -233,20 +238,11 @@ function extractTableSections(table: HTMLElement): Element[][] {
 
     flushLooseBodyRows();
 
-    if (tag === 'thead') {
+    const target = sectionTargets[tag];
+    if (target) {
       const rows = collectSectionRows(child);
       if (rows.length > 0) {
-        headSections.push(rows);
-      }
-    } else if (tag === 'tbody') {
-      const rows = collectSectionRows(child);
-      if (rows.length > 0) {
-        bodySections.push(rows);
-      }
-    } else if (tag === 'tfoot') {
-      const rows = collectSectionRows(child);
-      if (rows.length > 0) {
-        footSections.push(rows);
+        target.push(rows);
       }
     }
   }
@@ -254,6 +250,14 @@ function extractTableSections(table: HTMLElement): Element[][] {
   flushLooseBodyRows();
 
   return [...headSections, ...bodySections, ...footSections];
+}
+
+export function countDirectTableRows(table: Element): number {
+  let count = 0;
+  for (const section of extractTableSections(table)) {
+    count += section.length;
+  }
+  return count;
 }
 
 function extractSectionMatrix(rows: readonly Element[]): string[][] {
@@ -270,7 +274,7 @@ function extractSectionMatrix(rows: readonly Element[]): string[][] {
       return;
     }
 
-    const rowCells = (grid[rowIndex] ??= []);
+    grid[rowIndex] ??= [];
     const rowOccupied = (occupied[rowIndex] ??= []);
     let colIndex = 0;
 
@@ -293,12 +297,6 @@ function extractSectionMatrix(rows: readonly Element[]): string[][] {
       }
 
       colIndex += colSpan;
-    }
-
-    for (let c = 0; c < rowCells.length; c++) {
-      if (rowCells[c] === undefined) {
-        rowCells[c] = '';
-      }
     }
   });
 

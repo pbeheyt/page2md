@@ -32,6 +32,11 @@ interface ToastHostElement extends HTMLDivElement {
   [TOAST_TEARDOWN_SYMBOL]?: () => void;
 }
 
+interface AnimationFrameFns {
+  raf: ((callback: FrameRequestCallback) => number) | null;
+  caf: ((handle: number) => void) | null;
+}
+
 function removeExistingToast(doc: Document): void {
   const existing = doc.getElementById(TOAST_HOST_ID) as ToastHostElement | null;
   if (!existing) {
@@ -100,8 +105,8 @@ function attachToastStyles(shadow: ShadowRoot, doc: Document, css: string): void
         shadow.adoptedStyleSheets = [sheet];
         return;
       }
-    } catch {
-      void 0;
+    } catch (error) {
+      console.debug('[page2md] Constructable stylesheet unavailable, using <style>:', error);
     }
   }
 
@@ -131,24 +136,39 @@ function createToastHost(
   return { host, box };
 }
 
+function bindWindowMethod<T extends (...args: never[]) => unknown>(
+  win: Window | null,
+  method: T | undefined,
+  globalFallback: T | undefined
+): T | null {
+  if (win && typeof method === 'function') {
+    return method.bind(win) as T;
+  }
+  return typeof globalFallback === 'function' ? globalFallback : null;
+}
+
+function resolveAnimationFrameFns(doc: Document): AnimationFrameFns {
+  const win = doc.defaultView;
+  return {
+    raf: bindWindowMethod(
+      win,
+      win?.requestAnimationFrame,
+      typeof requestAnimationFrame === 'function' ? requestAnimationFrame : undefined
+    ),
+    caf: bindWindowMethod(
+      win,
+      win?.cancelAnimationFrame,
+      typeof cancelAnimationFrame === 'function' ? cancelAnimationFrame : undefined
+    ),
+  };
+}
+
 function scheduleToastLifecycle(
   host: ToastHostElement,
   box: HTMLDivElement,
   doc: Document
 ): void {
-  const win = doc.defaultView;
-  const raf =
-    win && typeof win.requestAnimationFrame === 'function'
-      ? win.requestAnimationFrame.bind(win)
-      : typeof requestAnimationFrame === 'function'
-        ? requestAnimationFrame
-        : null;
-  const caf =
-    win && typeof win.cancelAnimationFrame === 'function'
-      ? win.cancelAnimationFrame.bind(win)
-      : typeof cancelAnimationFrame === 'function'
-        ? cancelAnimationFrame
-        : null;
+  const { raf, caf } = resolveAnimationFrameFns(doc);
 
   let outerRafId: number | null = null;
   let innerRafId: number | null = null;

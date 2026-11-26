@@ -1,13 +1,10 @@
 import {
   createBackgroundController,
   type BackgroundActionApi,
-  type BackgroundRuntime,
 } from '@/lib/background-controller';
 
 function resolveActionApi(): BackgroundActionApi {
-  return (
-    import.meta.env.MANIFEST_VERSION === 3 ? browser.action : browser.browserAction
-  ) as unknown as BackgroundActionApi;
+  return import.meta.env.MANIFEST_VERSION === 3 ? browser.action : browser.browserAction;
 }
 
 export default defineBackground({
@@ -15,10 +12,10 @@ export default defineBackground({
   main() {
     const controller = createBackgroundController({
       actionApi: resolveActionApi(),
-      scripting: browser.scripting as unknown as BackgroundRuntime['scripting'],
-      contextMenus: browser.contextMenus as unknown as BackgroundRuntime['contextMenus'],
-      runtime: browser.runtime as unknown as BackgroundRuntime['runtime'],
-      tabs: browser.tabs as unknown as BackgroundRuntime['tabs'],
+      scripting: browser.scripting,
+      contextMenus: browser.contextMenus,
+      runtime: browser.runtime,
+      tabs: browser.tabs,
     });
     controller.attachListeners();
   },

@@ -1,10 +1,14 @@
 const MAX_CLEAN_URL_LENGTH = 250;
 
-const LINK_TRACKING_PARAM_RE =
-  /^(?:utm_[a-z0-9_]+|fbclid|gclid|yclid|mc_cid|mc_eid|ref_|pf_rd_[a-z0-9_]+|pd_rd_[a-z0-9_]+|_encoding|sprefix|crid|dib|dib_tag|hsa_cr_id|aref|smid|psc)$/i;
+const COMMON_TRACKING_PARAMS =
+  'utm_[a-z0-9_]+|fbclid|gclid|yclid|mc_cid|mc_eid';
 
-const DOC_TRACKING_PARAM_RE =
-  /^(?:utm_[a-z0-9_]+|fbclid|gclid|yclid|mc_cid|mc_eid)$/i;
+const LINK_TRACKING_PARAM_RE = new RegExp(
+  `^(?:${COMMON_TRACKING_PARAMS}|ref_|pf_rd_[a-z0-9_]+|pd_rd_[a-z0-9_]+|_encoding|sprefix|crid|dib|dib_tag|hsa_cr_id|aref|smid|psc)$`,
+  'i'
+);
+
+const DOC_TRACKING_PARAM_RE = new RegExp(`^(?:${COMMON_TRACKING_PARAMS})$`, 'i');
 
 const SAFE_HTTP_PROTOCOLS: ReadonlySet<string> = new Set(['http:', 'https:']);
 
@@ -30,21 +34,25 @@ function stripQueryParams(url: URL, pattern: RegExp): string {
   return url.href;
 }
 
+function parseSafeHttpUrl(rawUrl: string, baseUrl?: string): URL | null {
+  try {
+    const parsed = baseUrl ? new URL(rawUrl, baseUrl) : new URL(rawUrl);
+    if (!SAFE_HTTP_PROTOCOLS.has(parsed.protocol)) {
+      return null;
+    }
+    return parsed;
+  } catch (error) {
+    console.debug('[page2md] Invalid URL skipped:', error);
+    return null;
+  }
+}
+
 export function resolveSafeHttpUrl(rawHref: string, baseUrl?: string): string | null {
   const trimmed = stripControlChars(rawHref);
   if (!trimmed || trimmed.startsWith('#')) {
     return null;
   }
-
-  try {
-    const parsed = baseUrl ? new URL(trimmed, baseUrl) : new URL(trimmed);
-    if (!SAFE_HTTP_PROTOCOLS.has(parsed.protocol)) {
-      return null;
-    }
-    return parsed.href;
-  } catch {
-    return null;
-  }
+  return parseSafeHttpUrl(trimmed, baseUrl)?.href ?? null;
 }
 
 export function cleanLinkHref(rawHref: string, baseUrl?: string): string | null {
@@ -57,15 +65,11 @@ export function cleanLinkHref(rawHref: string, baseUrl?: string): string | null 
   const hasExplicitScheme = /^[a-z][a-z0-9+.-]*:/i.test(trimmed);
 
   if (hasExplicitScheme || baseUrl) {
-    try {
-      const parsed = baseUrl ? new URL(trimmed, baseUrl) : new URL(trimmed);
-      if (!SAFE_HTTP_PROTOCOLS.has(parsed.protocol)) {
-        return null;
-      }
-      cleaned = stripQueryParams(parsed, LINK_TRACKING_PARAM_RE);
-    } catch {
+    const parsed = parseSafeHttpUrl(trimmed, baseUrl);
+    if (!parsed) {
       return null;
     }
+    cleaned = stripQueryParams(parsed, LINK_TRACKING_PARAM_RE);
   } else {
     cleaned = trimmed;
   }
@@ -82,13 +86,6 @@ export function cleanDocumentUrl(rawUrl: string): string {
   if (!trimmed) {
     return '';
   }
-  try {
-    const parsed = new URL(trimmed);
-    if (!SAFE_HTTP_PROTOCOLS.has(parsed.protocol)) {
-      return trimmed;
-    }
-    return stripQueryParams(parsed, DOC_TRACKING_PARAM_RE);
-  } catch {
-    return trimmed;
-  }
+  const parsed = parseSafeHttpUrl(trimmed);
+  return parsed ? stripQueryParams(parsed, DOC_TRACKING_PARAM_RE) : trimmed;
 }

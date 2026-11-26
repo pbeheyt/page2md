@@ -16,7 +16,8 @@ function captureInputSelection(activeEl: HTMLElement | null): InputSelectionStat
       end: activeEl.selectionEnd,
       direction: activeEl.selectionDirection,
     };
-  } catch {
+  } catch (error) {
+    console.debug('[page2md] Input selection capture skipped:', error);
     return null;
   }
 }
@@ -51,6 +52,39 @@ function restoreSelectionRanges(doc: Document, ranges: readonly Range[]): void {
   }
 }
 
+function createHiddenCopyTextarea(doc: Document, text: string): HTMLTextAreaElement {
+  const textarea = doc.createElement('textarea');
+  textarea.value = text;
+  textarea.readOnly = true;
+  textarea.setAttribute('aria-hidden', 'true');
+  textarea.style.position = 'fixed';
+  textarea.style.top = '0';
+  textarea.style.left = '0';
+  textarea.style.opacity = '0';
+  textarea.style.pointerEvents = 'none';
+  return textarea;
+}
+
+function restoreFocusAndSelection(
+  doc: Document,
+  previousActive: HTMLElement | null,
+  savedInputSelection: InputSelectionState | null,
+  savedRanges: readonly Range[]
+): void {
+  try {
+    if (previousActive?.isConnected) {
+      previousActive.focus({ preventScroll: true });
+    }
+    if (savedInputSelection) {
+      restoreInputSelection(savedInputSelection);
+    } else {
+      restoreSelectionRanges(doc, savedRanges);
+    }
+  } catch (error) {
+    console.debug('[page2md] Focus/selection restore skipped:', error);
+  }
+}
+
 function copyViaTextarea(text: string, doc: Document): boolean {
   if (!(doc.documentElement instanceof HTMLElement) || !doc.body) {
     return false;
@@ -61,16 +95,7 @@ function copyViaTextarea(text: string, doc: Document): boolean {
   const savedInputSelection = captureInputSelection(previousActive);
   const savedRanges = savedInputSelection ? [] : captureSelectionRanges(doc);
 
-  const textarea = doc.createElement('textarea');
-  textarea.value = text;
-  textarea.readOnly = true;
-  textarea.setAttribute('aria-hidden', 'true');
-  textarea.style.position = 'fixed';
-  textarea.style.top = '0';
-  textarea.style.left = '0';
-  textarea.style.opacity = '0';
-  textarea.style.pointerEvents = 'none';
-
+  const textarea = createHiddenCopyTextarea(doc, text);
   const handleCopy = (event: ClipboardEvent): void => {
     if (!event.clipboardData) {
       return;
@@ -90,18 +115,7 @@ function copyViaTextarea(text: string, doc: Document): boolean {
   } finally {
     textarea.removeEventListener('copy', handleCopy);
     textarea.remove();
-    try {
-      if (previousActive?.isConnected) {
-        previousActive.focus({ preventScroll: true });
-      }
-      if (savedInputSelection) {
-        restoreInputSelection(savedInputSelection);
-      } else {
-        restoreSelectionRanges(doc, savedRanges);
-      }
-    } catch (error) {
-      console.debug('[page2md] Focus/selection restore skipped:', error);
-    }
+    restoreFocusAndSelection(doc, previousActive, savedInputSelection, savedRanges);
   }
 }
 

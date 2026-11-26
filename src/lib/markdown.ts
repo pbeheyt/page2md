@@ -1,47 +1,18 @@
 import TurndownService from 'turndown';
-import {
-  countWords,
-  MATH_PLACEHOLDER_ATTR,
-  NON_CONTENT_TAG_SET,
-} from '@/lib/constants';
+import { MATH_PLACEHOLDER_ATTR, NON_CONTENT_TAG_SET } from '@/lib/constants';
 import type { ExtractedDocument } from '@/lib/extractor';
+import { insertInlineBoundaries } from '@/lib/markdown-inline-boundaries';
+import { ANCHOR_ONLY_LABEL_RE, computeBacktickFence } from '@/lib/markdown-syntax';
 import { convertTableToMarkdown } from '@/lib/markdown-table';
+import { collapseWhitespace, countWords } from '@/lib/text';
 import { cleanDocumentUrl, cleanLinkHref } from '@/lib/url';
 
 export { countWords };
 
 const CODE_LANG_RE = /(?:^|\s)(?:language-|lang-)([a-z0-9_+.#-]+)/i;
 const SAFE_LANG_TOKEN_RE = /^[a-z0-9_+.#-]+/i;
-const ATTACHING_PUNCTUATION_RE = /^[,.;:!?)\]%»”’]/;
-const OPENING_PUNCTUATION_END_RE = /[([«“‘/'’]$/;
-const CURRENCY_PREFIX_CHAR_RE = /^[$€£¥#@~]$/;
-const SIGN_PREFIX_CHAR_RE = /^[+-]$/;
-const DECIMAL_TAIL_RE = /\d[.,]$/;
-const ANCHOR_ONLY_LABEL_RE = /^(?:#|¶|§|🔗)$/;
-
-const INLINE_BOUNDARY_TAGS: ReadonlySet<string> = new Set([
-  'span',
-  'a',
-  'time',
-  'small',
-  'label',
-  'data',
-  'abbr',
-]);
-
-const SUFFIX_ATTACHING_TAGS: ReadonlySet<string> = new Set(['a', 'abbr']);
 
 const olIndexCache = new WeakMap<Element, Map<Element, number>>();
-
-function getEmphasisGroup(tag: string): 'strong' | 'em' | '' {
-  if (tag === 'strong' || tag === 'b') {
-    return 'strong';
-  }
-  if (tag === 'em' || tag === 'i') {
-    return 'em';
-  }
-  return '';
-}
 
 function readLanguageFromElement(el: Element | null): string {
   if (!el) {
@@ -71,25 +42,10 @@ function extractCodeContent(preEl: HTMLElement): { code: string; codeEl: Element
   if (codeEls.length === 0) {
     return { code: (preEl.textContent ?? '').replace(/\n$/, ''), codeEl: null };
   }
-  if (codeEls.length === 1) {
-    const codeEl = codeEls[0] ?? null;
-    const rawCode = codeEl?.textContent ?? '';
-    return { code: rawCode.replace(/\n$/, ''), codeEl };
-  }
   const joined = Array.from(codeEls, (el) =>
     (el.textContent ?? '').replace(/\n$/, '')
   ).join('\n');
   return { code: joined, codeEl: codeEls[0] ?? null };
-}
-
-function computeCodeFence(code: string): string {
-  let maxRun = 0;
-  for (const match of code.matchAll(/`+/g)) {
-    if (match[0].length > maxRun) {
-      maxRun = match[0].length;
-    }
-  }
-  return '`'.repeat(Math.max(3, maxRun + 1));
 }
 
 function hasMeaningfulListItemContent(node: Node): boolean {
@@ -157,7 +113,7 @@ const FENCED_CODE_RULE: TurndownService.Rule = {
       return '';
     }
     const lang = extractCodeLanguage(node, codeEl);
-    const fence = computeCodeFence(code);
+    const fence = computeBacktickFence(code, 3);
     return `\n\n${fence}${lang}\n${code}\n${fence}\n\n`;
   },
 };
@@ -186,9 +142,7 @@ const MATH_PLACEHOLDER_RULE: TurndownService.Rule = {
 const CLEAN_LINK_RULE: TurndownService.Rule = {
   filter: (node) => node.nodeName === 'A',
   replacement: (content, node) => {
-    const label = content
-      .replace(/\s+/g, ' ')
-      .trim()
+    const label = collapseWhitespace(content)
       .replace(/^(?:#{1,6}\s+)+/, '')
       .replace(/^\\([+-])(?=\s)/, '$1');
     if (!label || ANCHOR_ONLY_LABEL_RE.test(label)) {
@@ -198,7 +152,8 @@ const CLEAN_LINK_RULE: TurndownService.Rule = {
     if (!cleanedHref) {
       return label;
     }
-    const title = node.getAttribute('title')?.replace(/\s+/g, ' ').trim();
+    const rawTitle = node.getAttribute('title');
+    const title = rawTitle ? collapseWhitespace(rawTitle) : '';
     const titlePart = title
       ? ` "${title.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
       : '';
@@ -214,9 +169,7 @@ const CLEAN_BR_RULE: TurndownService.Rule = {
 const CLEAN_HEADING_RULE: TurndownService.Rule = {
   filter: ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'],
   replacement: (content, node) => {
-    const cleaned = content
-      .replace(/\s+/g, ' ')
-      .trim()
+    const cleaned = collapseWhitespace(content)
       .replace(/^(?:#{1,6}\s+)+/, '')
       .replace(/^\\([+>-])(?=\s)/, '$1')
       .replace(/^(\d+)\\\./, '$1.');
@@ -255,8 +208,8 @@ const CLEAN_LIST_ITEM_RULE: TurndownService.Rule = {
     }
 
     let prefix = `${options.bulletListMarker} `;
-    const parent = node.parentNode as HTMLElement | null;
-    if (parent && parent.nodeName.toLowerCase() === 'ol') {
+    const parent = node.parentElement;
+    if (parent && parent.tagName.toLowerCase() === 'ol') {
       const start = parseOrderedListStart(parent);
       const index = getOrderedListItemIndex(parent, node);
       prefix = `${start + index}. `;
@@ -286,172 +239,6 @@ function escapeMarkdownText(text: string): string {
     .replace(/^([ \t]*\d+)\.(?=\s)/gm, '$1\\.');
 }
 
-function normalizeEdgeChunk(text: string): string {
-  return text.replace(/[\u00a0\u200b\ufeff]/g, ' ');
-}
-
-function getLeadingText(node: Node): string {
-  if (node.nodeType === Node.TEXT_NODE) {
-    const text = normalizeEdgeChunk((node as Text).data);
-    return text.length > 0 ? text : '';
-  }
-  if (node.nodeType !== Node.ELEMENT_NODE) {
-    return '';
-  }
-  const el = node as Element;
-  if (NON_CONTENT_TAG_SET.has(el.tagName.toLowerCase())) {
-    return '';
-  }
-  for (let child = el.firstChild; child; child = child.nextSibling) {
-    const chunk = getLeadingText(child);
-    if (chunk.length > 0) {
-      return chunk;
-    }
-  }
-  return '';
-}
-
-function getTrailingText(node: Node): string {
-  if (node.nodeType === Node.TEXT_NODE) {
-    const text = normalizeEdgeChunk((node as Text).data);
-    return text.length > 0 ? text : '';
-  }
-  if (node.nodeType !== Node.ELEMENT_NODE) {
-    return '';
-  }
-  const el = node as Element;
-  if (NON_CONTENT_TAG_SET.has(el.tagName.toLowerCase())) {
-    return '';
-  }
-  for (let child = el.lastChild; child; child = child.previousSibling) {
-    const chunk = getTrailingText(child);
-    if (chunk.length > 0) {
-      return chunk;
-    }
-  }
-  return '';
-}
-
-function readSingleTokenText(node: Node): string | null {
-  let collected = '';
-  const stack: Node[] = [node];
-
-  while (stack.length > 0) {
-    const current = stack.pop()!;
-    if (current.nodeType === Node.TEXT_NODE) {
-      const cleaned = normalizeEdgeChunk((current as Text).data).trim();
-      if (cleaned) {
-        collected += cleaned;
-        if (collected.length > 1) {
-          return null;
-        }
-      }
-      continue;
-    }
-    if (current.nodeType !== Node.ELEMENT_NODE) {
-      continue;
-    }
-    const el = current as Element;
-    if (NON_CONTENT_TAG_SET.has(el.tagName.toLowerCase())) {
-      continue;
-    }
-    for (let child = el.lastChild; child; child = child.previousSibling) {
-      stack.push(child);
-    }
-  }
-
-  return collected.length === 1 ? collected : null;
-}
-
-function hasPreviousNonWhitespaceContent(children: readonly Node[], index: number): boolean {
-  for (let i = index - 1; i >= 0; i--) {
-    const text = getTrailingText(children[i]!);
-    if (text.trim().length > 0) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function insertInlineBoundaries(root: Element, doc: Document): void {
-  const stack: Element[] = [root];
-
-  while (stack.length > 0) {
-    const current = stack.pop()!;
-    const tag = current.tagName.toLowerCase();
-    if (tag === 'pre' || tag === 'code' || tag === 'table') {
-      continue;
-    }
-
-    const children = Array.from(current.childNodes);
-    for (let i = 0; i < children.length - 1; i++) {
-      const left = children[i]!;
-      const right = children[i + 1]!;
-      if (left.nodeType !== Node.ELEMENT_NODE && right.nodeType !== Node.ELEMENT_NODE) {
-        continue;
-      }
-
-      const leftTag =
-        left.nodeType === Node.ELEMENT_NODE ? (left as Element).tagName.toLowerCase() : '';
-      const rightTag =
-        right.nodeType === Node.ELEMENT_NODE ? (right as Element).tagName.toLowerCase() : '';
-      const isNeutralBoundary =
-        INLINE_BOUNDARY_TAGS.has(leftTag) || INLINE_BOUNDARY_TAGS.has(rightTag);
-      const leftEmphasis = getEmphasisGroup(leftTag);
-      const isAdjacentEmphasis =
-        leftEmphasis !== '' && leftEmphasis === getEmphasisGroup(rightTag);
-      if (!isNeutralBoundary && !isAdjacentEmphasis) {
-        continue;
-      }
-
-      const leftEdge = getTrailingText(left);
-      const rightEdge = getLeadingText(right);
-      if (!leftEdge.trim() || !rightEdge.trim()) {
-        continue;
-      }
-      if (/\s$/.test(leftEdge) || /^\s/.test(rightEdge)) {
-        continue;
-      }
-      if (ATTACHING_PUNCTUATION_RE.test(rightEdge)) {
-        continue;
-      }
-      if (OPENING_PUNCTUATION_END_RE.test(leftEdge)) {
-        continue;
-      }
-      if (DECIMAL_TAIL_RE.test(leftEdge) && /^\d/.test(rightEdge)) {
-        continue;
-      }
-      if (
-        right.nodeType === Node.TEXT_NODE &&
-        SUFFIX_ATTACHING_TAGS.has(leftTag) &&
-        /^[a-z]/.test(rightEdge)
-      ) {
-        continue;
-      }
-
-      const singleToken = readSingleTokenText(left);
-      if (singleToken) {
-        if (CURRENCY_PREFIX_CHAR_RE.test(singleToken) && /^[0-9A-Za-zÀ-ÿ]/.test(rightEdge)) {
-          continue;
-        }
-        if (
-          SIGN_PREFIX_CHAR_RE.test(singleToken) &&
-          /^\d/.test(rightEdge) &&
-          !hasPreviousNonWhitespaceContent(children, i)
-        ) {
-          continue;
-        }
-      }
-
-      current.insertBefore(doc.createTextNode(' '), right);
-    }
-
-    for (const child of current.children) {
-      stack.push(child);
-    }
-  }
-}
-
 function createTurndownService(): TurndownService {
   const service = new TurndownService({
     headingStyle: 'atx',
@@ -479,12 +266,9 @@ function createTurndownService(): TurndownService {
 const turndownService = createTurndownService();
 
 function normalizeHeadingForComparison(text: string): string {
-  return text
-    .replace(/\\([[\]\\*_.+-])/g, '$1')
-    .replace(/[`*_]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase();
+  return collapseWhitespace(
+    text.replace(/\\([[\]\\*_.+-])/g, '$1').replace(/[`*_]/g, '')
+  ).toLowerCase();
 }
 
 function stripDuplicateLeadingH1(body: string, title: string): string {
@@ -541,7 +325,7 @@ export function formatDocumentAsMarkdown(doc: ExtractedDocument): string {
     return '';
   }
 
-  const normalizedTitle = doc.title.replace(/\s+/g, ' ').trim();
+  const normalizedTitle = collapseWhitespace(doc.title);
   const body = stripDuplicateLeadingH1(rawBody, normalizedTitle);
   const cleanedUrl = cleanDocumentUrl(doc.url);
 
