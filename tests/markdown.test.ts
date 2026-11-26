@@ -89,13 +89,47 @@ describe('htmlToCleanMarkdown', () => {
     ]);
   });
 
-  it('préserve les sauts de ligne <br> et supprime les liens vides enveloppant un SVG', () => {
+  it('préserve les sauts de ligne <br> sans backslash résiduel et supprime les liens vides enveloppant un SVG', () => {
     const html = `
       <p>Ligne 1<br>Ligne 2</p>
       <p><a href="https://example.com"><svg><title>Partager</title></svg></a></p>
     `;
     const md = htmlToCleanMarkdown(html);
-    expect(md).toBe('Ligne 1\\\nLigne 2');
+    expect(md).toBe('Ligne 1\nLigne 2');
+  });
+
+  it('sépare les spans adjacents sans casser les décimales ni la ponctuation et n’échappe pas les nombres négatifs', () => {
+    const html = `
+      <div><span>11 positions</span><span>valued 01:40 PM</span></div>
+      <div><span>Jan</span><span>-1.6%</span></div>
+      <p><span>30,</span><span>2 %</span> (<strong>5 titres</strong>) <strong>A :</strong><strong>B</strong> d’<a href="https://example.com/e">État</a></p>
+      <p><del>49,99 €</del> 29,99 €</p>
+    `;
+    const md = htmlToCleanMarkdown(html);
+    expect(md).toContain('11 positions valued 01:40 PM');
+    expect(md).toContain('Jan -1.6%');
+    expect(md).not.toContain('\\-1.6%');
+    expect(md).toContain('30,2 % (**5 titres**) **A :** **B** d’[État](https://example.com/e)');
+    expect(md).toContain('~~49,99 €~~ 29,99 €');
+  });
+
+  it('nettoie les URLs de tracking, supprime les URLs opaques >250 car., les puces/titres vides et les titres imbriqués', () => {
+    const longTracker = `https://ads.example.com/clk?p=${'a'.repeat(300)}`;
+    const html = `
+      <h1><h2>Résultats</h2></h1>
+      <h3>1. Source</h3>
+      <h3></h3>
+      <ol><li><img src="x.png" /></li><li><a href="https://example.com/item?utm_source=x&amp;id=42">Produit\n\nPhare</a></li><li><a href="${longTracker}">Offre</a></li></ol>
+      <p><a href="#section">#</a></p>
+    `;
+    const md = htmlToCleanMarkdown(html);
+    expect(md).toContain('# Résultats');
+    expect(md).not.toContain('# ##');
+    expect(md).toContain('### 1. Source');
+    expect(md).toContain('1. [Produit Phare](https://example.com/item?id=42)');
+    expect(md).toContain('2. Offre');
+    expect(md).not.toContain('ads.example.com');
+    expect(md).not.toContain('[#]');
   });
 });
 

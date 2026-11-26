@@ -2,10 +2,68 @@ import TurndownService from 'turndown';
 import { NON_CONTENT_TAG_SET, type ExtractedDocument } from '@/lib/extractor';
 
 const CODE_LANG_RE = /(?:^|\s)(?:language-|lang-)([a-z0-9_+.#-]+)/i;
-const ATTACHING_PUNCTUATION_RE = /^[,.;:!?)\]%]/;
-const SKIPPED_LINK_PROTOCOL_RE = /^javascript:/i;
+const ATTACHING_PUNCTUATION_RE = /^[,.;:!?)\]%»”’]/;
+const OPENING_PUNCTUATION_END_RE = /[([«“‘/'’]$/;
+const DECIMAL_TAIL_RE = /\d[.,]$/;
+const SKIPPED_LINK_PROTOCOL_RE = /^(?:javascript|mailto|tel|data):/i;
+const ANCHOR_ONLY_LABEL_RE = /^(?:#|¶|§|🔗)$/;
 const WORD_CHAR_RE = /[\p{L}\p{N}]/u;
 const MAX_TABLE_SPAN = 100;
+const MAX_CLEAN_URL_LENGTH = 250;
+
+const TRACKING_PARAM_RE =
+  /^(?:utm_[a-z0-9_]+|fbclid|gclid|yclid|mc_cid|mc_eid|ref_|pf_rd_[a-z0-9_]+|pd_rd_[a-z0-9_]+|_encoding|qid|sr|sprefix|crid|dib|dib_tag|content-id|hsa_cr_id|aref|smid|psc)$/i;
+
+const INLINE_BOUNDARY_TAGS: ReadonlySet<string> = new Set([
+  'span',
+  'a',
+  'time',
+  'small',
+  'label',
+  'data',
+  'abbr',
+]);
+
+const SAME_TAG_EMPHASIS_BOUNDARIES: ReadonlySet<string> = new Set([
+  'strong',
+  'b',
+  'em',
+  'i',
+]);
+
+function cleanLinkHref(rawHref: string): string | null {
+  const trimmed = rawHref.trim();
+  if (
+    !trimmed ||
+    trimmed.startsWith('#') ||
+    trimmed.endsWith('/#') ||
+    SKIPPED_LINK_PROTOCOL_RE.test(trimmed)
+  ) {
+    return null;
+  }
+
+  let cleaned = trimmed;
+  try {
+    const parsed = new URL(trimmed);
+    let mutated = false;
+    for (const key of Array.from(parsed.searchParams.keys())) {
+      if (TRACKING_PARAM_RE.test(key)) {
+        parsed.searchParams.delete(key);
+        mutated = true;
+      }
+    }
+    if (mutated) {
+      cleaned = parsed.href;
+    }
+  } catch {
+  }
+
+  if (cleaned.length > MAX_CLEAN_URL_LENGTH) {
+    return null;
+  }
+
+  return cleaned.replace(/\(/g, '%28').replace(/\)/g, '%29');
+}
 
 const CELL_BOUNDARY_TAGS = new Set([
   'span',
@@ -127,6 +185,14 @@ function collectCellSegments(node: Node, segments: CellSegment[], boundary: bool
     return;
   }
 
+  if (tag === 'span' && el.hasAttribute('data-page2md-math')) {
+    const tex = el.textContent.trim();
+    if (tex) {
+      segments.push({ text: `$${tex}$`, boundary: true });
+    }
+    return;
+  }
+
   if (tag === 'a') {
     const linkSegments: CellSegment[] = [];
     for (const child of el.childNodes) {
@@ -136,11 +202,8 @@ function collectCellSegments(node: Node, segments: CellSegment[], boundary: bool
     if (!label) {
       return;
     }
-    const href = el.getAttribute('href')?.trim() ?? '';
-    const formatted =
-      href && !SKIPPED_LINK_PROTOCOL_RE.test(href)
-        ? `[${label}](${href.replace(/\(/g, '%28').replace(/\)/g, '%29')})`
-        : label;
+    const href = cleanLinkHref(el.getAttribute('href') ?? '');
+    const formatted = href ? `[${label}](${href})` : label;
     segments.push({ text: formatted, boundary: true });
     return;
   }
@@ -322,7 +385,8 @@ function convertTableToMarkdown(table: HTMLElement): string {
   }
   const normalized = normalizeTableMatrix(rawMatrix);
   const compacted = compactTableColumns(normalized);
-  return renderGfmTable(compacted);
+  const nonEmptyRows = compacted.filter((row) => row.some((cell) => cell !== ''));
+  return renderGfmTable(nonEmptyRows);
 }
 
 const DROP_NON_CONTENT_RULE: TurndownService.Rule = {
@@ -353,23 +417,164 @@ const GFM_TABLE_RULE: TurndownService.Rule = {
   },
 };
 
+const MATH_PLACEHOLDER_RULE: TurndownService.Rule = {
+  filter: (node) =>
+    node.nodeName === 'SPAN' && node.hasAttribute('data-page2md-math'),
+  replacement: (_content, node) => {
+    const tex = (node.textContent ?? '').trim();
+    if (!tex) {
+      return '';
+    }
+    const mode = node.getAttribute('data-page2md-math');
+    return mode === 'block' ? `\n\n$$\n${tex}\n$$\n\n` : `$${tex}$`;
+  },
+};
+
 const CLEAN_LINK_RULE: TurndownService.Rule = {
   filter: (node) => node.nodeName === 'A',
   replacement: (content, node) => {
-    const label = content.trim();
-    if (!label) {
+    const label = content
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/^\\([+-])(?=\s)/, '$1');
+    if (!label || ANCHOR_ONLY_LABEL_RE.test(label)) {
       return '';
     }
-    const href = node.getAttribute('href')?.trim() ?? '';
-    if (!href || SKIPPED_LINK_PROTOCOL_RE.test(href)) {
+    const cleanedHref = cleanLinkHref(node.getAttribute('href') ?? '');
+    if (!cleanedHref) {
       return label;
     }
-    const escapedHref = href.replace(/\(/g, '%28').replace(/\)/g, '%29');
     const title = node.getAttribute('title')?.trim();
     const titlePart = title ? ` "${title.replace(/"/g, '\\"')}"` : '';
-    return `[${label}](${escapedHref}${titlePart})`;
+    return `[${label}](${cleanedHref}${titlePart})`;
   },
 };
+
+const CLEAN_BR_RULE: TurndownService.Rule = {
+  filter: 'br',
+  replacement: () => '\n',
+};
+
+const CLEAN_HEADING_RULE: TurndownService.Rule = {
+  filter: ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'],
+  replacement: (content, node) => {
+    const cleaned = content
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/^(?:#{1,6}\s+)+/, '')
+      .replace(/^(\d+)\\\./, '$1.');
+    if (!cleaned) {
+      return '';
+    }
+    const level = Number(node.nodeName.charAt(1));
+    return `\n\n${'#'.repeat(level)} ${cleaned}\n\n`;
+  },
+};
+
+const CLEAN_LIST_ITEM_RULE: TurndownService.Rule = {
+  filter: 'li',
+  replacement: (content, node, options) => {
+    const cleaned = content
+      .replace(/^\n+/, '')
+      .replace(/\n+$/, '\n')
+      .replace(/^\\([+-])(?=\s)/, '$1')
+      .replace(/\n/gm, '\n  ');
+    if (!cleaned.trim()) {
+      return '';
+    }
+
+    let prefix = `${options.bulletListMarker} `;
+    const parent = node.parentNode as HTMLElement | null;
+    if (parent && parent.nodeName === 'OL') {
+      const start = parent.getAttribute('start');
+      const siblings = Array.from(parent.children).filter(
+        (el) => el.nodeName === 'LI' && (el.textContent?.trim().length ?? 0) > 0
+      );
+      const index = siblings.indexOf(node);
+      const num = (start ? Number(start) : 1) + (index >= 0 ? index : 0);
+      prefix = `${num}. `;
+    }
+
+    return prefix + cleaned + (node.nextSibling && !/\n$/.test(cleaned) ? '\n' : '');
+  },
+};
+
+const STRIKETHROUGH_RULE: TurndownService.Rule = {
+  filter: ['del', 's'],
+  replacement: (content) => {
+    const trimmed = content.trim();
+    return trimmed ? `~~${trimmed}~~` : '';
+  },
+};
+
+function escapeMarkdownText(text: string): string {
+  return text
+    .replace(/\\/g, '\\\\')
+    .replace(/([`[\]])/g, '\\$1')
+    .replace(/^(\s*)(#{1,6})(?=\s)/gm, '$1\\$2')
+    .replace(/^(\s*)>/gm, '$1\\>')
+    .replace(/^(\s*)([-+*])(?=\s)/gm, '$1\\$2')
+    .replace(/^(\s*\d+)\.(?=\s)/gm, '$1\\.');
+}
+
+function getEdgeText(node: Node): string {
+  return (node.textContent ?? '').replace(/[\u00a0\u200b\ufeff]/g, ' ');
+}
+
+function insertInlineBoundaries(root: Element, doc: Document): void {
+  const stack: Element[] = [root];
+
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    const tag = current.tagName.toLowerCase();
+    if (tag === 'pre' || tag === 'code' || tag === 'table') {
+      continue;
+    }
+
+    const children = Array.from(current.childNodes);
+    for (let i = 0; i < children.length - 1; i++) {
+      const left = children[i]!;
+      const right = children[i + 1]!;
+      if (left.nodeType !== Node.ELEMENT_NODE && right.nodeType !== Node.ELEMENT_NODE) {
+        continue;
+      }
+
+      const leftTag = left.nodeType === Node.ELEMENT_NODE ? (left as Element).tagName.toLowerCase() : '';
+      const rightTag = right.nodeType === Node.ELEMENT_NODE ? (right as Element).tagName.toLowerCase() : '';
+      const isNeutralBoundary =
+        INLINE_BOUNDARY_TAGS.has(leftTag) || INLINE_BOUNDARY_TAGS.has(rightTag);
+      const isAdjacentEmphasis =
+        leftTag === rightTag && SAME_TAG_EMPHASIS_BOUNDARIES.has(leftTag);
+      if (!isNeutralBoundary && !isAdjacentEmphasis) {
+        continue;
+      }
+
+      const leftText = getEdgeText(left);
+      const rightText = getEdgeText(right);
+      if (!leftText.trim() || !rightText.trim()) {
+        continue;
+      }
+      if (/\s$/.test(leftText) || /^\s/.test(rightText)) {
+        continue;
+      }
+      if (ATTACHING_PUNCTUATION_RE.test(rightText)) {
+        continue;
+      }
+      if (OPENING_PUNCTUATION_END_RE.test(leftText)) {
+        continue;
+      }
+      if (DECIMAL_TAIL_RE.test(leftText) && /^\d/.test(rightText)) {
+        continue;
+      }
+
+      current.insertBefore(doc.createTextNode(' '), right);
+    }
+
+    for (const child of current.children) {
+      stack.push(child);
+    }
+  }
+}
 
 function createTurndownService(): TurndownService {
   const service = new TurndownService({
@@ -377,14 +582,19 @@ function createTurndownService(): TurndownService {
     codeBlockStyle: 'fenced',
     bulletListMarker: '-',
     emDelimiter: '*',
-    br: '\\',
   });
 
+  service.escape = escapeMarkdownText;
   service.addRule('dropNonContent', DROP_NON_CONTENT_RULE);
   service.addRule('dropImages', DROP_IMAGES_RULE);
+  service.addRule('mathPlaceholder', MATH_PLACEHOLDER_RULE);
+  service.addRule('cleanBr', CLEAN_BR_RULE);
+  service.addRule('cleanHeading', CLEAN_HEADING_RULE);
   service.addRule('fencedCode', FENCED_CODE_RULE);
   service.addRule('gfmTable', GFM_TABLE_RULE);
   service.addRule('cleanLink', CLEAN_LINK_RULE);
+  service.addRule('cleanListItem', CLEAN_LIST_ITEM_RULE);
+  service.addRule('strikethrough', STRIKETHROUGH_RULE);
 
   return service;
 }
@@ -421,8 +631,18 @@ export function htmlToCleanMarkdown(html: string): string {
     return '';
   }
 
+  let input: string | HTMLElement = html;
+  if (typeof document !== 'undefined') {
+    const container = document.createElement('div');
+    container.innerHTML = html;
+    insertInlineBoundaries(container, document);
+    input = container;
+  }
+
   return turndownService
-    .turndown(html)
+    .turndown(input)
+    .replace(/[\u00a0]/g, ' ')
+    .replace(/[\u200b\ufeff]/g, '')
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
