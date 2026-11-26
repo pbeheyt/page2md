@@ -5,16 +5,19 @@ import {
   NON_CONTENT_TAG_SET,
 } from '@/lib/constants';
 import type { ExtractedDocument } from '@/lib/extractor';
+import { convertTableToMarkdown } from '@/lib/markdown-table';
 import { cleanDocumentUrl, cleanLinkHref } from '@/lib/url';
 
 export { countWords };
 
 const CODE_LANG_RE = /(?:^|\s)(?:language-|lang-)([a-z0-9_+.#-]+)/i;
+const SAFE_LANG_TOKEN_RE = /^[a-z0-9_+.#-]+/i;
 const ATTACHING_PUNCTUATION_RE = /^[,.;:!?)\]%»”’]/;
 const OPENING_PUNCTUATION_END_RE = /[([«“‘/'’]$/;
+const CURRENCY_PREFIX_CHAR_RE = /^[$€£¥#@~]$/;
+const SIGN_PREFIX_CHAR_RE = /^[+-]$/;
 const DECIMAL_TAIL_RE = /\d[.,]$/;
 const ANCHOR_ONLY_LABEL_RE = /^(?:#|¶|§|🔗)$/;
-const MAX_TABLE_SPAN = 100;
 
 const INLINE_BOUNDARY_TAGS: ReadonlySet<string> = new Set([
   'span',
@@ -26,38 +29,33 @@ const INLINE_BOUNDARY_TAGS: ReadonlySet<string> = new Set([
   'abbr',
 ]);
 
-const SAME_TAG_EMPHASIS_BOUNDARIES: ReadonlySet<string> = new Set([
-  'strong',
-  'b',
-  'em',
-  'i',
-]);
+const SUFFIX_ATTACHING_TAGS: ReadonlySet<string> = new Set(['a', 'abbr']);
 
-const CELL_BOUNDARY_TAGS = new Set([
-  'span',
-  'div',
-  'p',
-  'li',
-  'h1',
-  'h2',
-  'h3',
-  'h4',
-  'h5',
-  'h6',
-]);
+const olIndexCache = new WeakMap<Element, Map<Element, number>>();
 
-interface CellSegment {
-  text: string;
-  boundary: boolean;
+function getEmphasisGroup(tag: string): 'strong' | 'em' | '' {
+  if (tag === 'strong' || tag === 'b') {
+    return 'strong';
+  }
+  if (tag === 'em' || tag === 'i') {
+    return 'em';
+  }
+  return '';
 }
 
 function readLanguageFromElement(el: Element | null): string {
   if (!el) {
     return '';
   }
-  const dataLang = (el.getAttribute('data-lang') ?? el.getAttribute('data-language') ?? '').trim();
-  if (dataLang) {
-    return dataLang.toLowerCase();
+  const rawDataLang =
+    el.getAttribute('data-lang')?.trim() ||
+    el.getAttribute('data-language')?.trim() ||
+    '';
+  if (rawDataLang) {
+    const token = rawDataLang.match(SAFE_LANG_TOKEN_RE)?.[0];
+    if (token) {
+      return token.toLowerCase();
+    }
   }
   const className = el.getAttribute('class') ?? '';
   const match = className.match(CODE_LANG_RE);
@@ -71,14 +69,16 @@ function extractCodeLanguage(preEl: HTMLElement, codeEl: Element | null): string
 function extractCodeContent(preEl: HTMLElement): { code: string; codeEl: Element | null } {
   const codeEls = preEl.querySelectorAll('code');
   if (codeEls.length === 0) {
-    return { code: preEl.textContent.replace(/\n$/, ''), codeEl: null };
+    return { code: (preEl.textContent ?? '').replace(/\n$/, ''), codeEl: null };
   }
   if (codeEls.length === 1) {
     const codeEl = codeEls[0] ?? null;
     const rawCode = codeEl?.textContent ?? '';
     return { code: rawCode.replace(/\n$/, ''), codeEl };
   }
-  const joined = Array.from(codeEls, (el) => el.textContent.replace(/\n$/, '')).join('\n');
+  const joined = Array.from(codeEls, (el) =>
+    (el.textContent ?? '').replace(/\n$/, '')
+  ).join('\n');
   return { code: joined, codeEl: codeEls[0] ?? null };
 }
 
@@ -92,269 +92,51 @@ function computeCodeFence(code: string): string {
   return '`'.repeat(Math.max(3, maxRun + 1));
 }
 
-function escapeTableCell(text: string): string {
-  return text.replace(/\s+/g, ' ').trim().replace(/\|/g, '\\|');
-}
-
-function joinCellSegments(segments: readonly CellSegment[]): string {
-  let result = '';
-  let previousBoundary = false;
-
-  for (const segment of segments) {
-    if (!segment.text) {
-      continue;
-    }
-
-    const needsSpace =
-      result.length > 0 &&
-      !/\s$/.test(result) &&
-      !/^\s/.test(segment.text) &&
-      !ATTACHING_PUNCTUATION_RE.test(segment.text) &&
-      (previousBoundary || segment.boundary);
-
-    result += needsSpace ? ` ${segment.text}` : segment.text;
-    previousBoundary = segment.boundary;
-  }
-
-  return result;
-}
-
-function collectCellSegments(node: Node, segments: CellSegment[], boundary: boolean): void {
+function hasMeaningfulListItemContent(node: Node): boolean {
   if (node.nodeType === Node.TEXT_NODE) {
-    const data = (node as Text).data;
-    if (data.trim()) {
-      segments.push({ text: data, boundary });
-    } else if (data.length > 0 && segments.length > 0) {
-      segments.push({ text: ' ', boundary: false });
-    }
-    return;
+    return (node as Text).data.trim().length > 0;
   }
-
   if (node.nodeType !== Node.ELEMENT_NODE) {
-    return;
+    return false;
   }
-
   const el = node as Element;
   const tag = el.tagName.toLowerCase();
   if (NON_CONTENT_TAG_SET.has(tag) || tag === 'img') {
-    return;
+    return false;
   }
-
-  if (tag === 'br') {
-    segments.push({ text: ' ', boundary: false });
-    return;
-  }
-
-  if (tag === 'code') {
-    const codeText = el.textContent.trim();
-    if (codeText) {
-      segments.push({ text: `\`${codeText}\``, boundary });
-    }
-    return;
-  }
-
-  if (tag === 'span' && el.hasAttribute(MATH_PLACEHOLDER_ATTR)) {
-    const tex = el.textContent.trim();
-    if (tex) {
-      segments.push({ text: `$${tex}$`, boundary: true });
-    }
-    return;
-  }
-
-  if (tag === 'a') {
-    const linkSegments: CellSegment[] = [];
-    for (const child of el.childNodes) {
-      collectCellSegments(child, linkSegments, false);
-    }
-    const label = joinCellSegments(linkSegments).trim();
-    if (!label) {
-      return;
-    }
-    const href = cleanLinkHref(el.getAttribute('href') ?? '');
-    const formatted = href ? `[${label}](${href})` : label;
-    segments.push({ text: formatted, boundary: true });
-    return;
-  }
-
-  const isBoundary = CELL_BOUNDARY_TAGS.has(tag);
-  const childSegments: CellSegment[] = [];
   for (const child of el.childNodes) {
-    collectCellSegments(child, childSegments, false);
+    if (hasMeaningfulListItemContent(child)) {
+      return true;
+    }
   }
-  const combined = joinCellSegments(childSegments);
-  if (combined) {
-    segments.push({ text: combined, boundary: isBoundary || boundary });
-  }
+  return false;
 }
 
-function formatTableCell(cell: Element): string {
-  const segments: CellSegment[] = [];
-  for (const child of cell.childNodes) {
-    collectCellSegments(child, segments, false);
+function getOrderedListItemIndex(parent: Element, item: Element): number {
+  let indexMap = olIndexCache.get(parent);
+  if (!indexMap) {
+    indexMap = new Map<Element, number>();
+    let seq = 0;
+    for (const child of parent.children) {
+      if (child.tagName.toLowerCase() === 'li' && hasMeaningfulListItemContent(child)) {
+        indexMap.set(child, seq++);
+      }
+    }
+    olIndexCache.set(parent, indexMap);
   }
-  return escapeTableCell(joinCellSegments(segments));
+  return indexMap.get(item) ?? 0;
 }
 
-function parseSpanAttribute(cell: Element, attr: 'colspan' | 'rowspan'): number {
-  const raw = cell.getAttribute(attr);
+function parseOrderedListStart(parent: Element): number {
+  const raw = parent.getAttribute('start');
   if (!raw) {
     return 1;
   }
   const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed < 1) {
+  if (!Number.isInteger(parsed) || parsed < 0) {
     return 1;
   }
-  return Math.min(parsed, MAX_TABLE_SPAN);
-}
-
-function extractDirectTableRows(table: HTMLElement): Element[] {
-  const headRows: Element[] = [];
-  const bodyRows: Element[] = [];
-  const footRows: Element[] = [];
-
-  for (const child of table.children) {
-    const tag = child.tagName;
-    if (tag === 'TR') {
-      bodyRows.push(child);
-    } else if (tag === 'THEAD') {
-      for (const row of child.children) {
-        if (row.tagName === 'TR') {
-          headRows.push(row);
-        }
-      }
-    } else if (tag === 'TBODY') {
-      for (const row of child.children) {
-        if (row.tagName === 'TR') {
-          bodyRows.push(row);
-        }
-      }
-    } else if (tag === 'TFOOT') {
-      for (const row of child.children) {
-        if (row.tagName === 'TR') {
-          footRows.push(row);
-        }
-      }
-    }
-  }
-
-  return [...headRows, ...bodyRows, ...footRows];
-}
-
-function extractTableMatrix(table: HTMLElement): string[][] {
-  const rows = extractDirectTableRows(table);
-  if (rows.length === 0) {
-    return [];
-  }
-
-  const grid: string[][] = [];
-  const occupied: boolean[][] = [];
-
-  rows.forEach((row, rowIndex) => {
-    const cells = Array.from(row.children).filter(
-      (el) => el.tagName === 'TH' || el.tagName === 'TD'
-    );
-    if (cells.length === 0) {
-      return;
-    }
-
-    const rowCells = (grid[rowIndex] ??= []);
-    const rowOccupied = (occupied[rowIndex] ??= []);
-    let colIndex = 0;
-
-    for (const cell of cells) {
-      while (rowOccupied[colIndex]) {
-        colIndex++;
-      }
-
-      const colSpan = parseSpanAttribute(cell, 'colspan');
-      const rowSpan = parseSpanAttribute(cell, 'rowspan');
-      const text = formatTableCell(cell);
-
-      for (let r = 0; r < rowSpan; r++) {
-        const targetRow = (grid[rowIndex + r] ??= []);
-        const targetOccupied = (occupied[rowIndex + r] ??= []);
-        for (let c = 0; c < colSpan; c++) {
-          targetOccupied[colIndex + c] = true;
-          targetRow[colIndex + c] = r === 0 && c === 0 ? text : '';
-        }
-      }
-
-      colIndex += colSpan;
-    }
-
-    for (let c = 0; c < rowCells.length; c++) {
-      if (rowCells[c] === undefined) {
-        rowCells[c] = '';
-      }
-    }
-  });
-
-  return grid.filter((row): row is string[] => Array.isArray(row) && row.length > 0);
-}
-
-function normalizeTableMatrix(rows: readonly string[][]): string[][] {
-  const colCount = rows.reduce((max, row) => (row.length > max ? row.length : max), 0);
-  if (colCount === 0) {
-    return [];
-  }
-
-  return rows.map((row) =>
-    Array.from({ length: colCount }, (_, colIndex) => row[colIndex] ?? '')
-  );
-}
-
-function compactTableColumns(matrix: readonly string[][]): string[][] {
-  const firstRow = matrix[0];
-  if (!firstRow) {
-    return [];
-  }
-
-  const nonEmptyColIndices: number[] = [];
-  for (let col = 0; col < firstRow.length; col++) {
-    if (matrix.some((row) => row[col] !== '')) {
-      nonEmptyColIndices.push(col);
-    }
-  }
-
-  if (nonEmptyColIndices.length === 0) {
-    return [];
-  }
-
-  return matrix.map((row) =>
-    nonEmptyColIndices.map((col) => {
-      const value = row[col];
-      return value === undefined ? '' : value;
-    })
-  );
-}
-
-function formatTableRow(cells: readonly string[]): string {
-  return `| ${cells.join(' | ')} |`;
-}
-
-function renderGfmTable(matrix: readonly string[][]): string {
-  const [header, ...body] = matrix;
-  if (!header) {
-    return '';
-  }
-
-  const separator = header.map(() => '---');
-  return [
-    formatTableRow(header),
-    formatTableRow(separator),
-    ...body.map(formatTableRow),
-  ].join('\n');
-}
-
-function convertTableToMarkdown(table: HTMLElement): string {
-  const rawMatrix = extractTableMatrix(table);
-  if (rawMatrix.length === 0) {
-    return '';
-  }
-  const normalized = normalizeTableMatrix(rawMatrix);
-  const compacted = compactTableColumns(normalized);
-  const nonEmptyRows = compacted.filter((row) => row.some((cell) => cell !== ''));
-  return renderGfmTable(nonEmptyRows);
+  return parsed;
 }
 
 const DROP_NON_CONTENT_RULE: TurndownService.Rule = {
@@ -371,6 +153,9 @@ const FENCED_CODE_RULE: TurndownService.Rule = {
   filter: 'pre',
   replacement: (_content, node) => {
     const { code, codeEl } = extractCodeContent(node);
+    if (!code.trim()) {
+      return '';
+    }
     const lang = extractCodeLanguage(node, codeEl);
     const fence = computeCodeFence(code);
     return `\n\n${fence}${lang}\n${code}\n${fence}\n\n`;
@@ -404,6 +189,7 @@ const CLEAN_LINK_RULE: TurndownService.Rule = {
     const label = content
       .replace(/\s+/g, ' ')
       .trim()
+      .replace(/^(?:#{1,6}\s+)+/, '')
       .replace(/^\\([+-])(?=\s)/, '$1');
     if (!label || ANCHOR_ONLY_LABEL_RE.test(label)) {
       return '';
@@ -412,8 +198,10 @@ const CLEAN_LINK_RULE: TurndownService.Rule = {
     if (!cleanedHref) {
       return label;
     }
-    const title = node.getAttribute('title')?.trim();
-    const titlePart = title ? ` "${title.replace(/"/g, '\\"')}"` : '';
+    const title = node.getAttribute('title')?.replace(/\s+/g, ' ').trim();
+    const titlePart = title
+      ? ` "${title.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+      : '';
     return `[${label}](${cleanedHref}${titlePart})`;
   },
 };
@@ -430,6 +218,7 @@ const CLEAN_HEADING_RULE: TurndownService.Rule = {
       .replace(/\s+/g, ' ')
       .trim()
       .replace(/^(?:#{1,6}\s+)+/, '')
+      .replace(/^\\([+>-])(?=\s)/, '$1')
       .replace(/^(\d+)\\\./, '$1.');
     if (!cleaned) {
       return '';
@@ -439,31 +228,43 @@ const CLEAN_HEADING_RULE: TurndownService.Rule = {
   },
 };
 
+const CLEAN_BLOCKQUOTE_RULE: TurndownService.Rule = {
+  filter: 'blockquote',
+  replacement: (content) => {
+    const trimmed = content.trim();
+    if (!trimmed) {
+      return '';
+    }
+    const quoted = trimmed
+      .split('\n')
+      .map((line) => (line.trim() ? `> ${line}` : '>'))
+      .join('\n');
+    return `\n\n${quoted}\n\n`;
+  },
+};
+
 const CLEAN_LIST_ITEM_RULE: TurndownService.Rule = {
   filter: 'li',
   replacement: (content, node, options) => {
-    const cleaned = content
+    const trimmed = content
       .replace(/^\n+/, '')
-      .replace(/\n+$/, '\n')
-      .replace(/^\\([+-])(?=\s)/, '$1')
-      .replace(/\n/gm, '\n  ');
-    if (!cleaned.trim()) {
+      .replace(/\n+$/, '')
+      .replace(/^\\([+-])(?=\s)/, '$1');
+    if (!trimmed.trim()) {
       return '';
     }
 
     let prefix = `${options.bulletListMarker} `;
     const parent = node.parentNode as HTMLElement | null;
-    if (parent && parent.nodeName === 'OL') {
-      const start = parent.getAttribute('start');
-      const siblings = Array.from(parent.children).filter(
-        (el) => el.nodeName === 'LI' && (el.textContent?.trim().length ?? 0) > 0
-      );
-      const index = siblings.indexOf(node);
-      const num = (start ? Number(start) : 1) + (index >= 0 ? index : 0);
-      prefix = `${num}. `;
+    if (parent && parent.nodeName.toLowerCase() === 'ol') {
+      const start = parseOrderedListStart(parent);
+      const index = getOrderedListItemIndex(parent, node);
+      prefix = `${start + index}. `;
     }
 
-    return prefix + cleaned + (node.nextSibling && !/\n$/.test(cleaned) ? '\n' : '');
+    const indent = ' '.repeat(prefix.length);
+    const indented = trimmed.replace(/\n([^\n])/g, `\n${indent}$1`);
+    return prefix + indented + (node.nextSibling ? '\n' : '');
   },
 };
 
@@ -479,14 +280,97 @@ function escapeMarkdownText(text: string): string {
   return text
     .replace(/\\/g, '\\\\')
     .replace(/([`[\]])/g, '\\$1')
-    .replace(/^(\s*)(#{1,6})(?=\s)/gm, '$1\\$2')
-    .replace(/^(\s*)>/gm, '$1\\>')
-    .replace(/^(\s*)([-+*])(?=\s)/gm, '$1\\$2')
-    .replace(/^(\s*\d+)\.(?=\s)/gm, '$1\\.');
+    .replace(/^([ \t]*)(#{1,6})(?=\s)/gm, '$1\\$2')
+    .replace(/^([ \t]*)>/gm, '$1\\>')
+    .replace(/^([ \t]*)([-+*])(?=\s)/gm, '$1\\$2')
+    .replace(/^([ \t]*\d+)\.(?=\s)/gm, '$1\\.');
 }
 
-function getEdgeText(node: Node): string {
-  return (node.textContent ?? '').replace(/[\u00a0\u200b\ufeff]/g, ' ');
+function normalizeEdgeChunk(text: string): string {
+  return text.replace(/[\u00a0\u200b\ufeff]/g, ' ');
+}
+
+function getLeadingText(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) {
+    const text = normalizeEdgeChunk((node as Text).data);
+    return text.length > 0 ? text : '';
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE) {
+    return '';
+  }
+  const el = node as Element;
+  if (NON_CONTENT_TAG_SET.has(el.tagName.toLowerCase())) {
+    return '';
+  }
+  for (let child = el.firstChild; child; child = child.nextSibling) {
+    const chunk = getLeadingText(child);
+    if (chunk.length > 0) {
+      return chunk;
+    }
+  }
+  return '';
+}
+
+function getTrailingText(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) {
+    const text = normalizeEdgeChunk((node as Text).data);
+    return text.length > 0 ? text : '';
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE) {
+    return '';
+  }
+  const el = node as Element;
+  if (NON_CONTENT_TAG_SET.has(el.tagName.toLowerCase())) {
+    return '';
+  }
+  for (let child = el.lastChild; child; child = child.previousSibling) {
+    const chunk = getTrailingText(child);
+    if (chunk.length > 0) {
+      return chunk;
+    }
+  }
+  return '';
+}
+
+function readSingleTokenText(node: Node): string | null {
+  let collected = '';
+  const stack: Node[] = [node];
+
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    if (current.nodeType === Node.TEXT_NODE) {
+      const cleaned = normalizeEdgeChunk((current as Text).data).trim();
+      if (cleaned) {
+        collected += cleaned;
+        if (collected.length > 1) {
+          return null;
+        }
+      }
+      continue;
+    }
+    if (current.nodeType !== Node.ELEMENT_NODE) {
+      continue;
+    }
+    const el = current as Element;
+    if (NON_CONTENT_TAG_SET.has(el.tagName.toLowerCase())) {
+      continue;
+    }
+    for (let child = el.lastChild; child; child = child.previousSibling) {
+      stack.push(child);
+    }
+  }
+
+  return collected.length === 1 ? collected : null;
+}
+
+function hasPreviousNonWhitespaceContent(children: readonly Node[], index: number): boolean {
+  for (let i = index - 1; i >= 0; i--) {
+    const text = getTrailingText(children[i]!);
+    if (text.trim().length > 0) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function insertInlineBoundaries(root: Element, doc: Document): void {
@@ -507,32 +391,56 @@ function insertInlineBoundaries(root: Element, doc: Document): void {
         continue;
       }
 
-      const leftTag = left.nodeType === Node.ELEMENT_NODE ? (left as Element).tagName.toLowerCase() : '';
-      const rightTag = right.nodeType === Node.ELEMENT_NODE ? (right as Element).tagName.toLowerCase() : '';
+      const leftTag =
+        left.nodeType === Node.ELEMENT_NODE ? (left as Element).tagName.toLowerCase() : '';
+      const rightTag =
+        right.nodeType === Node.ELEMENT_NODE ? (right as Element).tagName.toLowerCase() : '';
       const isNeutralBoundary =
         INLINE_BOUNDARY_TAGS.has(leftTag) || INLINE_BOUNDARY_TAGS.has(rightTag);
+      const leftEmphasis = getEmphasisGroup(leftTag);
       const isAdjacentEmphasis =
-        leftTag === rightTag && SAME_TAG_EMPHASIS_BOUNDARIES.has(leftTag);
+        leftEmphasis !== '' && leftEmphasis === getEmphasisGroup(rightTag);
       if (!isNeutralBoundary && !isAdjacentEmphasis) {
         continue;
       }
 
-      const leftText = getEdgeText(left);
-      const rightText = getEdgeText(right);
-      if (!leftText.trim() || !rightText.trim()) {
+      const leftEdge = getTrailingText(left);
+      const rightEdge = getLeadingText(right);
+      if (!leftEdge.trim() || !rightEdge.trim()) {
         continue;
       }
-      if (/\s$/.test(leftText) || /^\s/.test(rightText)) {
+      if (/\s$/.test(leftEdge) || /^\s/.test(rightEdge)) {
         continue;
       }
-      if (ATTACHING_PUNCTUATION_RE.test(rightText)) {
+      if (ATTACHING_PUNCTUATION_RE.test(rightEdge)) {
         continue;
       }
-      if (OPENING_PUNCTUATION_END_RE.test(leftText)) {
+      if (OPENING_PUNCTUATION_END_RE.test(leftEdge)) {
         continue;
       }
-      if (DECIMAL_TAIL_RE.test(leftText) && /^\d/.test(rightText)) {
+      if (DECIMAL_TAIL_RE.test(leftEdge) && /^\d/.test(rightEdge)) {
         continue;
+      }
+      if (
+        right.nodeType === Node.TEXT_NODE &&
+        SUFFIX_ATTACHING_TAGS.has(leftTag) &&
+        /^[a-z]/.test(rightEdge)
+      ) {
+        continue;
+      }
+
+      const singleToken = readSingleTokenText(left);
+      if (singleToken) {
+        if (CURRENCY_PREFIX_CHAR_RE.test(singleToken) && /^[0-9A-Za-zÀ-ÿ]/.test(rightEdge)) {
+          continue;
+        }
+        if (
+          SIGN_PREFIX_CHAR_RE.test(singleToken) &&
+          /^\d/.test(rightEdge) &&
+          !hasPreviousNonWhitespaceContent(children, i)
+        ) {
+          continue;
+        }
       }
 
       current.insertBefore(doc.createTextNode(' '), right);
@@ -558,6 +466,7 @@ function createTurndownService(): TurndownService {
   service.addRule('mathPlaceholder', MATH_PLACEHOLDER_RULE);
   service.addRule('cleanBr', CLEAN_BR_RULE);
   service.addRule('cleanHeading', CLEAN_HEADING_RULE);
+  service.addRule('cleanBlockquote', CLEAN_BLOCKQUOTE_RULE);
   service.addRule('fencedCode', FENCED_CODE_RULE);
   service.addRule('gfmTable', GFM_TABLE_RULE);
   service.addRule('cleanLink', CLEAN_LINK_RULE);
@@ -569,8 +478,17 @@ function createTurndownService(): TurndownService {
 
 const turndownService = createTurndownService();
 
+function normalizeHeadingForComparison(text: string): string {
+  return text
+    .replace(/\\([[\]\\*_.+-])/g, '$1')
+    .replace(/[`*_]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
 function stripDuplicateLeadingH1(body: string, title: string): string {
-  const normalizedTitle = title.replace(/\s+/g, ' ').trim().toLowerCase();
+  const normalizedTitle = normalizeHeadingForComparison(title);
   if (!normalizedTitle) {
     return body;
   }
@@ -581,12 +499,12 @@ function stripDuplicateLeadingH1(body: string, title: string): string {
     return body;
   }
 
-  const match = firstLine.match(/^#\s+(.+?)\s*#*$/);
+  const match = firstLine.match(/^#\s+(.+)$/);
   if (!match?.[1]) {
     return body;
   }
 
-  const headingText = match[1].replace(/\s+/g, ' ').trim().toLowerCase();
+  const headingText = normalizeHeadingForComparison(match[1]);
   if (headingText !== normalizedTitle) {
     return body;
   }
@@ -609,6 +527,7 @@ export function htmlToCleanMarkdown(html: string): string {
 
   return turndownService
     .turndown(input)
+    .replace(/\r\n?/g, '\n')
     .replace(/[\u00a0]/g, ' ')
     .replace(/[\u00ad\u200b\ufeff]/g, '')
     .replace(/[ \t]+\n/g, '\n')

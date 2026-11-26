@@ -116,20 +116,80 @@ describe('htmlToCleanMarkdown', () => {
   it('nettoie les URLs de tracking, supprime les URLs opaques >250 car., les puces/titres vides et les titres imbriqués', () => {
     const longTracker = `https://ads.example.com/clk?p=${'a'.repeat(300)}`;
     const html = `
-      <h1><h2>Résultats</h2></h1>
+      <h1><div><h2>Résultats</h2></div></h1>
       <h3>1. Source</h3>
       <h3></h3>
       <ol><li><img src="x.png" /></li><li><a href="https://example.com/item?utm_source=x&amp;id=42">Produit\n\nPhare</a></li><li><a href="${longTracker}">Offre</a></li></ol>
       <p><a href="#section">#</a></p>
     `;
     const md = htmlToCleanMarkdown(html);
-    expect(md).toContain('# Résultats');
+    expect(md.split('\n')).toContain('# Résultats');
     expect(md).not.toContain('# ##');
     expect(md).toContain('### 1. Source');
     expect(md).toContain('1. [Produit Phare](https://example.com/item?id=42)');
     expect(md).toContain('2. Offre');
     expect(md).not.toContain('ads.example.com');
     expect(md).not.toContain('[#]');
+  });
+
+  it('durcit les tableaux GFM (pipes LaTeX, décimales, <del>, <code> avec backticks, rowspan par section et tableaux imbriqués)', () => {
+    const html = `
+      <table>
+        <thead>
+          <tr><th rowspan="5">Section</th><th>Détail</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td rowspan="0"><span>30,</span><span>2 %</span> d’<a href="https://example.com/e">État [FR]</a><a href="#top">#</a></td>
+            <td><code>a \` b</code> <del>ancien</del> <span data-page2md-math="inline">\\|x\\|</span></td>
+          </tr>
+          <tr>
+            <td><table><tr><td>A</td><td>B</td></tr></table></td>
+          </tr>
+        </tbody>
+      </table>
+    `;
+    const lines = htmlToCleanMarkdown(html).split('\n');
+    expect(lines).toEqual([
+      '| Section | Détail |',
+      '| --- | --- |',
+      '| 30,2 % d’[État \\[FR\\]](https://example.com/e) | ``a ` b`` ~~ancien~~ $\\\\\\|x\\\\\\|$ |',
+      '|  | A B |',
+    ]);
+  });
+
+  it('indente correctement les listes <ol>, valide start, et supprime les blockquotes/pre vides', () => {
+    const html = `
+      <ol start="10">
+        <li><p>Premier paragraphe</p><p>Second paragraphe</p></li>
+        <li>Suivant</li>
+      </ol>
+      <ol start="invalid"><li>Un</li></ol>
+      <blockquote><img src="x.png" alt="vide" /></blockquote>
+      <pre><img src="x.png" /></pre>
+      <pre data-lang="" data-language="ts extra\`bad"><code>const ok = true;</code></pre>
+    `;
+    const md = htmlToCleanMarkdown(html);
+    expect(md).toContain('10. Premier paragraphe\n\n    Second paragraphe\n11. Suivant');
+    expect(md).toContain('1. Un');
+    expect(md).not.toContain('NaN.');
+    expect(md).not.toMatch(/^>\s*$/m);
+    expect(md).toContain('```ts\nconst ok = true;\n```');
+  });
+
+  it('gère les suffixes de liens, préfixes monétaires, emphases synonymes, liens à titres/titles échappés et HTML inerte', () => {
+    const html = `
+      <p>Les <a href="https://example.com/api">API</a>s coûtent <span>$</span><span>100</span> ou <strong>gras</strong><b>suite</b>.</p>
+      <p><a href="https://example.com/doc" title="Guide &quot;v1&quot; \\"><h3>Documentation</h3></a></p>
+      <p><img src="x" onerror="window.__xss=1" />Propre</p>
+    `;
+    const md = htmlToCleanMarkdown(html);
+    expect(md).toContain('[API](https://example.com/api)s');
+    expect(md).toContain('$100');
+    expect(md).toContain('**gras** **suite**');
+    expect(md).toContain('[Documentation](https://example.com/doc "Guide \\"v1\\" \\\\")');
+    expect(md).not.toContain('[### Documentation]');
+    expect(Reflect.get(window, '__xss')).toBeUndefined();
   });
 });
 
@@ -144,14 +204,22 @@ describe('formatDocumentAsMarkdown', () => {
     expect(md).toBe('# Guide WXT\nSource : https://wxt.dev/guide\n\nContenu utile.');
   });
 
-  it('évite la duplication du H1 quand le corps commence par le même titre', () => {
-    const md = formatDocumentAsMarkdown({
-      title: 'Guide WXT',
-      url: 'https://wxt.dev/guide',
-      html: '<h1>Guide WXT</h1><p>Contenu utile.</p>',
+  it('évite la duplication du H1 y compris pour C# ou un titre avec crochets', () => {
+    const csharp = formatDocumentAsMarkdown({
+      title: 'Guide C#',
+      url: 'https://example.com/csharp?utm_source=test',
+      html: '<h1>Guide C#</h1><p>Contenu utile.</p>',
       source: 'fallback',
     });
-    expect(md).toBe('# Guide WXT\nSource : https://wxt.dev/guide\n\nContenu utile.');
+    expect(csharp).toBe('# Guide C#\nSource : https://example.com/csharp\n\nContenu utile.');
+
+    const bracketed = formatDocumentAsMarkdown({
+      title: 'Note [2026]',
+      url: 'https://example.com/note',
+      html: '<h1>Note [2026]</h1><p>Texte.</p>',
+      source: 'fallback',
+    });
+    expect(bracketed).toBe('# Note [2026]\nSource : https://example.com/note\n\nTexte.');
   });
 
   it('omet la ligne titre si doc.title est vide', () => {
