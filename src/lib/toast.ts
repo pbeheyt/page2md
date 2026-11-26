@@ -55,6 +55,8 @@ function buildToastCss(variantConfig: ToastVariantConfig): string {
       all: initial;
       display: block;
       box-sizing: border-box;
+      max-width: calc(100vw - 32px);
+      overflow-wrap: break-word;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       font-size: 13px;
       font-weight: 500;
@@ -86,12 +88,20 @@ function buildToastCss(variantConfig: ToastVariantConfig): string {
 }
 
 function attachToastStyles(shadow: ShadowRoot, doc: Document, css: string): void {
-  if (typeof CSSStyleSheet !== 'undefined' && 'adoptedStyleSheets' in shadow) {
-    const sheet = new CSSStyleSheet();
-    if (typeof sheet.replaceSync === 'function') {
-      sheet.replaceSync(css);
-      shadow.adoptedStyleSheets = [sheet];
-      return;
+  const styleSheetCtor =
+    doc.defaultView?.CSSStyleSheet ??
+    (typeof CSSStyleSheet !== 'undefined' ? CSSStyleSheet : undefined);
+
+  if (typeof styleSheetCtor === 'function' && 'adoptedStyleSheets' in shadow) {
+    try {
+      const sheet = new styleSheetCtor();
+      if (typeof sheet.replaceSync === 'function') {
+        sheet.replaceSync(css);
+        shadow.adoptedStyleSheets = [sheet];
+        return;
+      }
+    } catch {
+      void 0;
     }
   }
 
@@ -121,19 +131,37 @@ function createToastHost(
   return { host, box };
 }
 
-function scheduleToastLifecycle(host: ToastHostElement, box: HTMLDivElement): void {
+function scheduleToastLifecycle(
+  host: ToastHostElement,
+  box: HTMLDivElement,
+  doc: Document
+): void {
+  const win = doc.defaultView;
+  const raf =
+    win && typeof win.requestAnimationFrame === 'function'
+      ? win.requestAnimationFrame.bind(win)
+      : typeof requestAnimationFrame === 'function'
+        ? requestAnimationFrame
+        : null;
+  const caf =
+    win && typeof win.cancelAnimationFrame === 'function'
+      ? win.cancelAnimationFrame.bind(win)
+      : typeof cancelAnimationFrame === 'function'
+        ? cancelAnimationFrame
+        : null;
+
   let outerRafId: number | null = null;
   let innerRafId: number | null = null;
   let hideTimerId: ReturnType<typeof setTimeout> | null = null;
   let removeTimerId: ReturnType<typeof setTimeout> | null = null;
 
   const teardown = (): void => {
-    if (outerRafId !== null) {
-      cancelAnimationFrame(outerRafId);
+    if (outerRafId !== null && caf) {
+      caf(outerRafId);
       outerRafId = null;
     }
-    if (innerRafId !== null) {
-      cancelAnimationFrame(innerRafId);
+    if (innerRafId !== null && caf) {
+      caf(innerRafId);
       innerRafId = null;
     }
     if (hideTimerId !== null) {
@@ -148,13 +176,17 @@ function scheduleToastLifecycle(host: ToastHostElement, box: HTMLDivElement): vo
 
   host[TOAST_TEARDOWN_SYMBOL] = teardown;
 
-  outerRafId = requestAnimationFrame(() => {
-    outerRafId = null;
-    innerRafId = requestAnimationFrame(() => {
-      innerRafId = null;
-      box.classList.add('visible');
+  if (raf) {
+    outerRafId = raf(() => {
+      outerRafId = null;
+      innerRafId = raf(() => {
+        innerRafId = null;
+        box.classList.add('visible');
+      });
     });
-  });
+  } else {
+    box.classList.add('visible');
+  }
 
   hideTimerId = setTimeout(() => {
     hideTimerId = null;
@@ -182,5 +214,5 @@ export function showToast(
   const { host, box } = createToastHost(doc, message, variantConfig);
 
   doc.documentElement.appendChild(host);
-  scheduleToastLifecycle(host, box);
+  scheduleToastLifecycle(host, box, doc);
 }

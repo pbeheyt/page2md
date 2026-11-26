@@ -25,7 +25,7 @@ describe('copyToClipboard', () => {
     expect(writeText).toHaveBeenCalledWith('hello markdown');
   });
 
-  it('bascule sur textarea en nettoyant le DOM et en restaurant la sélection si writeText échoue', async () => {
+  it('bascule sur textarea en restaurant le focus avant la sélection si writeText échoue', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
@@ -34,7 +34,10 @@ describe('copyToClipboard', () => {
       },
     });
 
-    document.body.innerHTML = '<p id="target">Texte sélectionné</p>';
+    document.body.innerHTML = '<button id="btn">Action</button><p id="target">Texte sélectionné</p>';
+    const button = document.getElementById('btn') as HTMLButtonElement;
+    button.focus();
+
     const textNode = document.getElementById('target')!.firstChild!;
     const range = document.createRange();
     range.setStart(textNode, 0);
@@ -44,6 +47,18 @@ describe('copyToClipboard', () => {
     selection.removeAllRanges();
     selection.addRange(range);
 
+    const order: string[] = [];
+    const origFocus = button.focus.bind(button);
+    vi.spyOn(button, 'focus').mockImplementation((options?: FocusOptions) => {
+      order.push('focus');
+      origFocus(options);
+    });
+    const origAddRange = selection.addRange.bind(selection);
+    vi.spyOn(selection, 'addRange').mockImplementation((r: Range) => {
+      order.push('addRange');
+      origAddRange(r);
+    });
+
     document.execCommand = vi.fn().mockReturnValue(true);
 
     const ok = await copyToClipboard('copied text', document);
@@ -51,16 +66,59 @@ describe('copyToClipboard', () => {
     expect(warnSpy).toHaveBeenCalledOnce();
     expect(document.querySelector('textarea')).toBeNull();
     expect(window.getSelection()?.toString()).toBe('Texte');
+    expect(order).toEqual(['focus', 'addRange']);
   });
 
-  it('retourne false sans lever d’exception sur un document XML non-HTML', async () => {
+  it('préserve la sélection d’un <input> et intercepte l’événement copy pour bloquer les listeners hôtes', async () => {
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: undefined,
     });
 
+    document.body.innerHTML = '<input id="field" value="Bonjour monde" />';
+    const input = document.getElementById('field') as HTMLInputElement;
+    input.focus();
+    input.setSelectionRange(0, 7);
+
+    const hostListener = vi.fn();
+    document.addEventListener('copy', hostListener);
+
+    let writtenPayload = '';
+    document.execCommand = vi.fn().mockImplementation(() => {
+      const textarea = document.querySelector('textarea')!;
+      const copyEvent = new Event('copy', { bubbles: true, cancelable: true }) as ClipboardEvent;
+      Object.defineProperty(copyEvent, 'clipboardData', {
+        value: {
+          setData: (_type: string, data: string) => {
+            writtenPayload = data;
+          },
+        },
+      });
+      textarea.dispatchEvent(copyEvent);
+      return true;
+    });
+
+    const ok = await copyToClipboard('# Markdown propre', document);
+    document.removeEventListener('copy', hostListener);
+
+    expect(ok).toBe(true);
+    expect(writtenPayload).toBe('# Markdown propre');
+    expect(hostListener).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(input);
+    expect(input.selectionStart).toBe(0);
+    expect(input.selectionEnd).toBe(7);
+  });
+
+  it('retourne false sans lever d’exception si execCommand échoue ou sur un document XML', async () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: undefined,
+    });
+
+    document.execCommand = vi.fn().mockReturnValue(false);
+    expect(await copyToClipboard('fail text', document)).toBe(false);
+
     const xmlDoc = new DOMParser().parseFromString('<root><item>1</item></root>', 'application/xml');
-    const ok = await copyToClipboard('xml text', xmlDoc);
-    expect(ok).toBe(false);
+    expect(await copyToClipboard('xml text', xmlDoc)).toBe(false);
   });
 });

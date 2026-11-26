@@ -1,3 +1,33 @@
+interface InputSelectionState {
+  element: HTMLInputElement | HTMLTextAreaElement;
+  start: number | null;
+  end: number | null;
+  direction: 'forward' | 'backward' | 'none' | null;
+}
+
+function captureInputSelection(activeEl: HTMLElement | null): InputSelectionState | null {
+  if (!(activeEl instanceof HTMLInputElement || activeEl instanceof HTMLTextAreaElement)) {
+    return null;
+  }
+  try {
+    return {
+      element: activeEl,
+      start: activeEl.selectionStart,
+      end: activeEl.selectionEnd,
+      direction: activeEl.selectionDirection,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function restoreInputSelection(state: InputSelectionState | null): void {
+  if (!state || !state.element.isConnected || state.start === null || state.end === null) {
+    return;
+  }
+  state.element.setSelectionRange(state.start, state.end, state.direction ?? undefined);
+}
+
 function captureSelectionRanges(doc: Document): Range[] {
   const selection = doc.defaultView?.getSelection();
   if (!selection || selection.rangeCount === 0) {
@@ -28,7 +58,8 @@ function copyViaTextarea(text: string, doc: Document): boolean {
 
   const previousActive =
     doc.activeElement instanceof HTMLElement ? doc.activeElement : null;
-  const savedRanges = captureSelectionRanges(doc);
+  const savedInputSelection = captureInputSelection(previousActive);
+  const savedRanges = savedInputSelection ? [] : captureSelectionRanges(doc);
 
   const textarea = doc.createElement('textarea');
   textarea.value = text;
@@ -40,6 +71,16 @@ function copyViaTextarea(text: string, doc: Document): boolean {
   textarea.style.opacity = '0';
   textarea.style.pointerEvents = 'none';
 
+  const handleCopy = (event: ClipboardEvent): void => {
+    if (!event.clipboardData) {
+      return;
+    }
+    event.clipboardData.setData('text/plain', text);
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  };
+
+  textarea.addEventListener('copy', handleCopy);
   doc.body.appendChild(textarea);
 
   try {
@@ -47,9 +88,20 @@ function copyViaTextarea(text: string, doc: Document): boolean {
     textarea.select();
     return doc.execCommand('copy');
   } finally {
+    textarea.removeEventListener('copy', handleCopy);
     textarea.remove();
-    restoreSelectionRanges(doc, savedRanges);
-    previousActive?.focus({ preventScroll: true });
+    try {
+      if (previousActive?.isConnected) {
+        previousActive.focus({ preventScroll: true });
+      }
+      if (savedInputSelection) {
+        restoreInputSelection(savedInputSelection);
+      } else {
+        restoreSelectionRanges(doc, savedRanges);
+      }
+    } catch (error) {
+      console.debug('[page2md] Focus/selection restore skipped:', error);
+    }
   }
 }
 
@@ -57,9 +109,13 @@ export async function copyToClipboard(
   text: string,
   doc: Document = document
 ): Promise<boolean> {
-  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+  const clipboard =
+    doc.defaultView?.navigator?.clipboard ??
+    (typeof navigator !== 'undefined' ? navigator.clipboard : undefined);
+
+  if (clipboard?.writeText) {
     try {
-      await navigator.clipboard.writeText(text);
+      await clipboard.writeText(text);
       return true;
     } catch (error) {
       console.warn('[page2md] Async clipboard write failed, using DOM fallback:', error);

@@ -15,6 +15,7 @@ afterEach(() => {
   document.getElementById('page2md-toast-host')?.remove();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe('showToast', () => {
@@ -46,5 +47,49 @@ describe('showToast', () => {
     const xmlDoc = new DOMParser().parseFromString('<root />', 'application/xml');
     expect(() => showToast('Test', 'error', xmlDoc)).not.toThrow();
     expect(xmlDoc.getElementById('page2md-toast-host')).toBeNull();
+  });
+
+  it('bascule sur <style> si adoptedStyleSheets lève une erreur et configure role/aria-live', () => {
+    let capturedShadow: ShadowRoot | null = null;
+    const originalAttachShadow = Element.prototype.attachShadow;
+    vi.spyOn(Element.prototype, 'attachShadow').mockImplementation(function (
+      this: Element,
+      init: ShadowRootInit
+    ) {
+      const shadow = originalAttachShadow.call(this, init);
+      Object.defineProperty(shadow, 'adoptedStyleSheets', {
+        configurable: true,
+        get: () => [],
+        set: () => {
+          throw new Error('Xray wrapper error');
+        },
+      });
+      capturedShadow = shadow;
+      return shadow;
+    });
+
+    vi.stubGlobal(
+      'CSSStyleSheet',
+      class FakeStyleSheet {
+        replaceSync(): void {}
+      }
+    );
+
+    expect(() => showToast('Erreur critique', 'error', document)).not.toThrow();
+    expect(capturedShadow).not.toBeNull();
+
+    const styleEl = capturedShadow!.querySelector('style');
+    expect(styleEl?.textContent).toContain('max-width: calc(100vw - 32px)');
+
+    const box = capturedShadow!.querySelector('.toast');
+    expect(box?.getAttribute('role')).toBe('alert');
+    expect(box?.getAttribute('aria-live')).toBe('assertive');
+    expect(box?.classList.contains('visible')).toBe(false);
+
+    vi.advanceTimersByTime(40);
+    expect(box?.classList.contains('visible')).toBe(true);
+
+    vi.advanceTimersByTime(2200);
+    expect(box?.classList.contains('visible')).toBe(false);
   });
 });
