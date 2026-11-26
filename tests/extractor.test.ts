@@ -230,22 +230,30 @@ describe('extractDocumentContent', () => {
   });
 
   it('bascule sur <main> nettoyé si Readability ampute la majorité d’un fil multi-messages', () => {
+    const replies = Array.from(
+      { length: 8 },
+      (_, i) => `
+        <div class="comment">
+          <a href="/u/membre-${i + 1}">Membre ${i + 1}</a>
+          <p>Réponse ${i + 1} très détaillée avec des éléments chiffrés sur la marge opérationnelle, le carnet de commandes et les risques d'exécution.</p>
+        </div>
+      `
+    ).join('');
     setLiveDocument(
       'Forum Discussion',
       `
       <nav><a href="/">Menu</a></nav>
       <main>
         <div role="navigation"><a href="/sidebar">Navigation interne</a></div>
-        <section>
+        <article>
           <h1>Sujet principal</h1>
-          <p>Premier message détaillé qui présente l'ensemble du contexte technique, les chiffres clés de l'année et les perspectives à moyen terme.</p>
-        </section>
-        <section>
+          <p>Premier message détaillé qui présente l'ensemble du contexte technique, les chiffres clés de l'année et les perspectives à moyen terme pour la filière européenne.</p>
+          <p>Analyse complémentaire des marges, des investissements industriels, de la trésorerie et de la structure financière sur les trois derniers exercices publiés.</p>
+        </article>
+        <div id="comments" class="comments">
           <h2>Réponses</h2>
-          <div><p>Réponse 1 très détaillée avec des éléments chiffrés sur la marge opérationnelle, le carnet de commandes et les risques d'exécution.</p></div>
-          <div><p>Réponse 2 apportant une nuance critique sur la valorisation actuelle et la concurrence asiatique sur le segment serveurs.</p></div>
-          <div><p>Réponse 3 ajoutant un comparatif complet avec les résultats du trimestre précédent et les prochaines échéances financières.</p></div>
-        </section>
+          ${replies}
+        </div>
         <button type="button">Répondre</button>
         <select><option>Trier par date</option><option>Trier par vote</option></select>
       </main>
@@ -253,10 +261,11 @@ describe('extractDocumentContent', () => {
     );
 
     const extracted = extractDocumentContent(document, 'page');
+    expect(extracted.source).toBe('fallback');
     const md = formatDocumentAsMarkdown(extracted);
     expect(md).toContain('Premier message détaillé');
     expect(md).toContain('Réponse 1 très détaillée');
-    expect(md).toContain('Réponse 3 ajoutant');
+    expect(md).toContain('Réponse 8 très détaillée');
     expect(md).not.toContain('Navigation interne');
     expect(md).not.toContain('Trier par date');
   });
@@ -342,5 +351,88 @@ describe('extractDocumentContent', () => {
     const md = formatDocumentAsMarkdown(extracted);
     expect(md).toContain('```ts\nconst a = 1;\nconst b = 2;\n```');
     expect(md).not.toContain('Copy');
+  });
+
+  it('préserve les <pre> multi-<code>, les lignes <div></div> vides et ignore les <textarea readonly> cachés', () => {
+    setLiveDocument(
+      'Multi-code',
+      `
+      <main>
+        <h1>Code</h1>
+        <pre class="language-js"><code>const a = 1;</code><code>const b = 2;</code></pre>
+        <pre><code><div>line 1</div><div></div><div>line 3</div></code></pre>
+        <textarea readonly hidden>secret buffer</textarea>
+        <textarea aria-readonly="true" style="display: none">hidden editor buffer</textarea>
+      </main>
+      `
+    );
+
+    const extracted = extractDocumentContent(document, 'page');
+    const md = formatDocumentAsMarkdown(extracted);
+    expect(md).toContain('```js\nconst a = 1;\nconst b = 2;\n```');
+    expect(md).toContain('```\nline 1\n\nline 3\n```');
+    expect(md).not.toContain('secret buffer');
+    expect(md).not.toContain('hidden editor buffer');
+  });
+
+  it('préserve une sélection couvrant <thead> et <tbody> ainsi que les formules <math> en sélection', () => {
+    setLiveDocument(
+      'Sélection riche',
+      `
+      <table id="t">
+        <thead><tr><th>Nom</th><th>Formule</th></tr></thead>
+        <tbody><tr><td>Identité</td><td><math><semantics><annotation encoding="application/x-tex">e^{i\\pi}+1=0</annotation></semantics></math></td></tr></tbody>
+      </table>
+      `
+    );
+
+    const table = document.getElementById('t')!;
+    const range = document.createRange();
+    range.setStart(table.querySelector('thead')!, 0);
+    range.setEnd(table.querySelector('tbody')!, 1);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    const extracted = extractDocumentContent(document, 'selection');
+    expect(extracted.source).toBe('selection');
+    const md = formatDocumentAsMarkdown(extracted);
+    expect(md).toContain('| Nom | Formule |');
+    expect(md).toContain('| Identité | $e^{i\\pi}+1=0$ |');
+  });
+
+  it('détecte katex-display / data-mw sur ancêtre, préserve {\\displaystyle a} + {\\displaystyle b} et garde <aside> dans <main>', () => {
+    setLiveDocument(
+      'Maths et callout',
+      `
+      <main>
+        <div class="mwe-math-element mwe-math-element-block" data-mw='{"body":{"extsrc":"{\\\\displaystyle a} + {\\\\displaystyle b}"}}'>
+          <span style="display: none"><math><mi>a+b</mi></math></span>
+        </div>
+        <aside><p>Note importante dans le contenu principal.</p></aside>
+      </main>
+      <aside><p>Barre latérale externe.</p></aside>
+      `
+    );
+
+    const extracted = extractDocumentContent(document, 'page');
+    const md = formatDocumentAsMarkdown(extracted);
+    expect(md).toContain('$$\n{\\displaystyle a} + {\\displaystyle b}\n$$');
+    expect(md).toContain('Note importante dans le contenu principal.');
+    expect(md).not.toContain('Barre latérale externe.');
+  });
+
+  it('ignore un premier <main> vide et nettoie les attributs onerror', () => {
+    setLiveDocument(
+      'Main vide',
+      `
+      <main></main>
+      <div id="content"><p>Contenu utile <img src="x" onerror="window.__xss=1" /></p></div>
+      `
+    );
+
+    const extracted = extractDocumentContent(document, 'page');
+    expect(extracted.html).toContain('Contenu utile');
+    expect(extracted.html).not.toContain('onerror');
   });
 });
