@@ -1,18 +1,20 @@
 import TurndownService from 'turndown';
-import { NON_CONTENT_TAG_SET, type ExtractedDocument } from '@/lib/extractor';
+import {
+  countWords,
+  MATH_PLACEHOLDER_ATTR,
+  NON_CONTENT_TAG_SET,
+} from '@/lib/constants';
+import type { ExtractedDocument } from '@/lib/extractor';
+import { cleanDocumentUrl, cleanLinkHref } from '@/lib/url';
+
+export { countWords };
 
 const CODE_LANG_RE = /(?:^|\s)(?:language-|lang-)([a-z0-9_+.#-]+)/i;
 const ATTACHING_PUNCTUATION_RE = /^[,.;:!?)\]%»”’]/;
 const OPENING_PUNCTUATION_END_RE = /[([«“‘/'’]$/;
 const DECIMAL_TAIL_RE = /\d[.,]$/;
-const SKIPPED_LINK_PROTOCOL_RE = /^(?:javascript|mailto|tel|data):/i;
 const ANCHOR_ONLY_LABEL_RE = /^(?:#|¶|§|🔗)$/;
-const WORD_CHAR_RE = /[\p{L}\p{N}]/u;
 const MAX_TABLE_SPAN = 100;
-const MAX_CLEAN_URL_LENGTH = 250;
-
-const TRACKING_PARAM_RE =
-  /^(?:utm_[a-z0-9_]+|fbclid|gclid|yclid|mc_cid|mc_eid|ref_|pf_rd_[a-z0-9_]+|pd_rd_[a-z0-9_]+|_encoding|qid|sr|sprefix|crid|dib|dib_tag|content-id|hsa_cr_id|aref|smid|psc)$/i;
 
 const INLINE_BOUNDARY_TAGS: ReadonlySet<string> = new Set([
   'span',
@@ -30,40 +32,6 @@ const SAME_TAG_EMPHASIS_BOUNDARIES: ReadonlySet<string> = new Set([
   'em',
   'i',
 ]);
-
-function cleanLinkHref(rawHref: string): string | null {
-  const trimmed = rawHref.trim();
-  if (
-    !trimmed ||
-    trimmed.startsWith('#') ||
-    trimmed.endsWith('/#') ||
-    SKIPPED_LINK_PROTOCOL_RE.test(trimmed)
-  ) {
-    return null;
-  }
-
-  let cleaned = trimmed;
-  try {
-    const parsed = new URL(trimmed);
-    let mutated = false;
-    for (const key of Array.from(parsed.searchParams.keys())) {
-      if (TRACKING_PARAM_RE.test(key)) {
-        parsed.searchParams.delete(key);
-        mutated = true;
-      }
-    }
-    if (mutated) {
-      cleaned = parsed.href;
-    }
-  } catch {
-  }
-
-  if (cleaned.length > MAX_CLEAN_URL_LENGTH) {
-    return null;
-  }
-
-  return cleaned.replace(/\(/g, '%28').replace(/\)/g, '%29');
-}
 
 const CELL_BOUNDARY_TAGS = new Set([
   'span',
@@ -185,7 +153,7 @@ function collectCellSegments(node: Node, segments: CellSegment[], boundary: bool
     return;
   }
 
-  if (tag === 'span' && el.hasAttribute('data-page2md-math')) {
+  if (tag === 'span' && el.hasAttribute(MATH_PLACEHOLDER_ATTR)) {
     const tex = el.textContent.trim();
     if (tex) {
       segments.push({ text: `$${tex}$`, boundary: true });
@@ -419,13 +387,13 @@ const GFM_TABLE_RULE: TurndownService.Rule = {
 
 const MATH_PLACEHOLDER_RULE: TurndownService.Rule = {
   filter: (node) =>
-    node.nodeName === 'SPAN' && node.hasAttribute('data-page2md-math'),
+    node.nodeName === 'SPAN' && node.hasAttribute(MATH_PLACEHOLDER_ATTR),
   replacement: (_content, node) => {
     const tex = (node.textContent ?? '').trim();
     if (!tex) {
       return '';
     }
-    const mode = node.getAttribute('data-page2md-math');
+    const mode = node.getAttribute(MATH_PLACEHOLDER_ATTR);
     return mode === 'block' ? `\n\n$$\n${tex}\n$$\n\n` : `$${tex}$`;
   },
 };
@@ -632,17 +600,17 @@ export function htmlToCleanMarkdown(html: string): string {
   }
 
   let input: string | HTMLElement = html;
-  if (typeof document !== 'undefined') {
-    const container = document.createElement('div');
-    container.innerHTML = html;
-    insertInlineBoundaries(container, document);
-    input = container;
+  if (typeof document !== 'undefined' && document.implementation?.createHTMLDocument) {
+    const inertDoc = document.implementation.createHTMLDocument('');
+    inertDoc.body.innerHTML = html;
+    insertInlineBoundaries(inertDoc.body, inertDoc);
+    input = inertDoc.body;
   }
 
   return turndownService
     .turndown(input)
     .replace(/[\u00a0]/g, ' ')
-    .replace(/[\u200b\ufeff]/g, '')
+    .replace(/[\u00ad\u200b\ufeff]/g, '')
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
@@ -656,13 +624,14 @@ export function formatDocumentAsMarkdown(doc: ExtractedDocument): string {
 
   const normalizedTitle = doc.title.replace(/\s+/g, ' ').trim();
   const body = stripDuplicateLeadingH1(rawBody, normalizedTitle);
+  const cleanedUrl = cleanDocumentUrl(doc.url);
 
   const headerLines: string[] = [];
   if (normalizedTitle) {
     headerLines.push(`# ${normalizedTitle}`);
   }
-  if (doc.url) {
-    headerLines.push(`Source : ${doc.url}`);
+  if (cleanedUrl) {
+    headerLines.push(`Source : ${cleanedUrl}`);
   }
 
   if (headerLines.length === 0) {
@@ -670,12 +639,4 @@ export function formatDocumentAsMarkdown(doc: ExtractedDocument): string {
   }
 
   return body ? `${headerLines.join('\n')}\n\n${body}` : headerLines.join('\n');
-}
-
-export function countWords(text: string): number {
-  const trimmed = text.trim();
-  if (!trimmed) {
-    return 0;
-  }
-  return trimmed.split(/\s+/).filter((token) => WORD_CHAR_RE.test(token)).length;
 }

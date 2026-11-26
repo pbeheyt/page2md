@@ -1,4 +1,14 @@
 import { Readability } from '@mozilla/readability';
+import {
+  CODE_LANG_ATTRIBUTES,
+  countWords,
+  MATH_PLACEHOLDER_ATTR,
+  NON_CONTENT_TAG_SET,
+  NON_CONTENT_TAGS,
+} from '@/lib/constants';
+import { resolveSafeHttpUrl } from '@/lib/url';
+
+export { NON_CONTENT_TAG_SET, NON_CONTENT_TAGS };
 
 export type ExtractMode = 'auto' | 'page' | 'selection';
 
@@ -8,18 +18,6 @@ export interface ExtractedDocument {
   html: string;
   source: 'selection' | 'readability' | 'fallback';
 }
-
-export const NON_CONTENT_TAGS = [
-  'script',
-  'style',
-  'noscript',
-  'iframe',
-  'svg',
-  'canvas',
-  'template',
-] as const;
-
-export const NON_CONTENT_TAG_SET: ReadonlySet<string> = new Set(NON_CONTENT_TAGS);
 
 const HIDDEN_SELECTORS = [
   '[hidden]',
@@ -92,8 +90,6 @@ const PRUNABLE_EMPTY_CONTAINER_TAGS: ReadonlySet<string> = new Set([
 
 const NON_CONTENT_SELECTORS = [...NON_CONTENT_TAGS, HIDDEN_SELECTORS].join(', ');
 
-const SKIPPED_HREF_PROTOCOL_RE = /^(?:javascript|mailto|tel|data):/i;
-const WORD_TOKEN_RE = /[\p{L}\p{N}]/u;
 const MIN_READABILITY_TEXT_CHARS = 120;
 const MAX_ACTION_BUTTON_TEXT_LEN = 40;
 const MIN_MAIN_RETENTION_RATIO = 0.65;
@@ -152,17 +148,6 @@ function resolveBaseUrl(doc: Document, documentUrl: string): string {
   return documentUrl;
 }
 
-function resolveUrl(rawHref: string, baseUrl: string): string | null {
-  const trimmed = rawHref.trim();
-  if (!trimmed || trimmed.startsWith('#') || SKIPPED_HREF_PROTOCOL_RE.test(trimmed)) {
-    return null;
-  }
-  if (!URL.canParse(trimmed, baseUrl)) {
-    return null;
-  }
-  return new URL(trimmed, baseUrl).href;
-}
-
 function resolveRelativeLinks(root: ParentNode, baseUrl: string): void {
   if (!baseUrl) {
     return;
@@ -172,9 +157,20 @@ function resolveRelativeLinks(root: ParentNode, baseUrl: string): void {
     if (!rawHref) {
       continue;
     }
-    const resolved = resolveUrl(rawHref, baseUrl);
+    const resolved = resolveSafeHttpUrl(rawHref, baseUrl);
     if (resolved) {
       anchor.setAttribute('href', resolved);
+    } else if (!rawHref.trim().startsWith('#')) {
+      anchor.removeAttribute('href');
+    }
+  }
+}
+
+function sanitizeClonedAttributes(el: Element): void {
+  for (const attr of Array.from(el.attributes)) {
+    const lowerName = attr.name.toLowerCase();
+    if (lowerName.startsWith('on') || lowerName === MATH_PLACEHOLDER_ATTR) {
+      el.removeAttribute(attr.name);
     }
   }
 }
@@ -259,7 +255,7 @@ function createMathPlaceholder(
     return null;
   }
   const span = targetDoc.createElement('span');
-  span.setAttribute('data-page2md-math', extracted.block ? 'block' : 'inline');
+  span.setAttribute(MATH_PLACEHOLDER_ATTR, extracted.block ? 'block' : 'inline');
   span.textContent = extracted.tex;
   return span;
 }
@@ -363,6 +359,7 @@ function cloneVisibleChildren(
 
     const nextInsidePre = insidePre || tag === 'pre' || tag === 'code';
     const clonedEl = targetDoc.importNode(liveEl, false) as Element;
+    sanitizeClonedAttributes(clonedEl);
     cloneVisibleChildren(
       liveEl,
       clonedEl,
@@ -489,7 +486,7 @@ function cloneVisibleDocument(doc: Document, baseUrl: string): Document {
 }
 
 function copyCodeAttributes(source: Element, target: Element): void {
-  for (const attr of ['class', 'data-lang', 'data-language']) {
+  for (const attr of CODE_LANG_ATTRIBUTES) {
     const value = source.getAttribute(attr);
     if (value) {
       target.setAttribute(attr, value);
@@ -654,14 +651,6 @@ interface FallbackExtraction {
   codeBlockCount: number;
 }
 
-function countWordsInText(text: string): number {
-  const trimmed = text.trim();
-  if (!trimmed) {
-    return 0;
-  }
-  return trimmed.split(/\s+/).filter((token) => WORD_TOKEN_RE.test(token)).length;
-}
-
 function countNonEmptyTables(root: ParentNode): number {
   let count = 0;
   for (const table of root.querySelectorAll('table')) {
@@ -726,7 +715,7 @@ function extractFallback(cleanDoc: Document, baseUrl: string): FallbackExtractio
   return {
     html: root.innerHTML,
     hasExplicitMain,
-    wordCount: countWordsInText(root.textContent ?? ''),
+    wordCount: countWords(root.textContent ?? ''),
     headingCount: root.querySelectorAll('h1, h2, h3').length,
     tableCount: countNonEmptyTables(root),
     codeBlockCount: countNonEmptyCodeBlocks(root),
@@ -778,7 +767,7 @@ function tryExtractWithReadability(
       article.content,
       'readability'
     ),
-    wordCount: countWordsInText(textContent),
+    wordCount: countWords(textContent),
     headingCount: measureDoc.body.querySelectorAll('h1, h2, h3').length,
     tableCount: countNonEmptyTables(measureDoc.body),
     codeBlockCount: countNonEmptyCodeBlocks(measureDoc.body),
