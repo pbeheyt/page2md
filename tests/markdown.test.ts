@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
-  countWords,
   formatDocumentAsMarkdown,
   htmlToCleanMarkdown,
 } from '@/lib/markdown';
+import { countWords, estimateTokens } from '@/lib/text';
 
 describe('htmlToCleanMarkdown', () => {
   it('retourne une chaîne vide pour une entrée vide ou blanche', () => {
@@ -238,5 +238,26 @@ describe('countWords', () => {
     expect(countWords('')).toBe(0);
     expect(countWords('| --- | --- |')).toBe(0);
     expect(countWords('# Guide WXT\nSource : https://wxt.dev/guide\n\nContenu utile.')).toBe(6);
+  });
+});
+
+describe('estimateTokens', () => {
+  it('retourne 0 pour une chaîne vide ou blanche', () => {
+    expect(estimateTokens('')).toBe(0);
+    expect(estimateTokens('   \n\t  ')).toBe(0);
+  });
+
+  it('estime de façon cohérente la prose, le Markdown/code et le CJK', () => {
+    const prose = estimateTokens('The quick brown fox jumps over the lazy dog.');
+    expect(prose).toBeGreaterThanOrEqual(9);
+    expect(prose).toBeLessThanOrEqual(13);
+
+    const markdownCode = estimateTokens('```ts\nconst x = foo.bar(a, b);\n```');
+    expect(markdownCode).toBeGreaterThanOrEqual(10);
+    expect(markdownCode).toBeLessThanOrEqual(15);
+
+    const cjk = estimateTokens('这是一段中文测试文本');
+    expect(cjk).toBeGreaterThanOrEqual(10);
+    expect(cjk).toBeLessThanOrEqual(15);
   });
 });

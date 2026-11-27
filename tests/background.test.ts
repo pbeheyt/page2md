@@ -97,11 +97,11 @@ describe('invokeInjectedRunner', () => {
     Reflect.set(globalThis, Symbol.for(RUNNER_SYMBOL_KEY), async () => ({
       ok: true,
       source: 'readability',
-      wordCount: 42,
+      tokenEstimate: 42,
     }));
     expect(await invokeInjectedRunner(RUNNER_SYMBOL_KEY, 'auto')).toEqual({
       status: 'ok',
-      result: { ok: true, source: 'readability', wordCount: 42 },
+      result: { ok: true, source: 'readability', tokenEstimate: 42 },
     });
 
     Reflect.set(globalThis, Symbol.for(RUNNER_SYMBOL_KEY), async () => {
@@ -120,7 +120,7 @@ describe('createBackgroundController', () => {
     mocks.executeScript
       .mockResolvedValueOnce([{ result: { status: 'missing' } }])
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ result: { status: 'ok', result: { ok: true, wordCount: 10 } } }]);
+      .mockResolvedValueOnce([{ result: { status: 'ok', result: { ok: true, tokenEstimate: 10 } } }]);
 
     const controller = createBackgroundController(runtime);
     await controller.triggerCopy(7, 'auto');
@@ -167,7 +167,7 @@ describe('createBackgroundController', () => {
 
     expect(mocks.executeScript).toHaveBeenCalledTimes(1);
 
-    resolveFirst([{ result: { status: 'ok', result: { ok: true, wordCount: 5 } } }]);
+    resolveFirst([{ result: { status: 'ok', result: { ok: true, tokenEstimate: 5 } } }]);
     await Promise.all([first, second]);
     expect(mocks.executeScript).toHaveBeenCalledTimes(1);
   });

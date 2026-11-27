@@ -23,11 +23,10 @@ describe('runCopy', () => {
     const result = await runCopy('page', document);
 
     expect(result.ok).toBe(true);
-    expect(result.wordCount).toBeGreaterThan(0);
     expect(result.tokenEstimate).toBeGreaterThan(0);
     expect(copySpy).toHaveBeenCalledOnce();
     expect(toastSpy).toHaveBeenCalledWith(
-      expect.stringMatching(/Page copiée · ~\d+ mots? · ~[\d,]+k? tokens?/),
+      expect.stringMatching(/^Page copiée · ~[\d,]+k? tokens?$/),
       'success',
       document
     );

@@ -4,15 +4,12 @@ import {
   type ExtractMode,
   type ExtractedDocument,
 } from '@/lib/extractor';
-import { countWords, formatDocumentAsMarkdown } from '@/lib/markdown';
+import { formatDocumentAsMarkdown } from '@/lib/markdown';
 import type { CopyResult } from '@/lib/protocol';
+import { estimateTokens } from '@/lib/text';
 import { showToast, type ToastVariant } from '@/lib/toast';
 
 const activeCopyDocuments = new WeakSet<Document>();
-
-function estimateTokens(markdown: string): number {
-  return Math.max(1, Math.round(markdown.length / 4));
-}
 
 function formatTokenCount(tokens: number): string {
   if (tokens >= 1000) {
@@ -25,12 +22,10 @@ function formatTokenCount(tokens: number): string {
 
 function formatCopySuccessMessage(
   source: ExtractedDocument['source'],
-  wordCount: number,
   tokenEstimate: number
 ): string {
   const scope = source === 'selection' ? 'Sélection copiée' : 'Page copiée';
-  const unit = wordCount > 1 ? 'mots' : 'mot';
-  return `${scope} · ~${wordCount} ${unit} · ${formatTokenCount(tokenEstimate)}`;
+  return `${scope} · ${formatTokenCount(tokenEstimate)}`;
 }
 
 function safeShowToast(message: string, variant: ToastVariant, doc: Document): void {
@@ -70,14 +65,13 @@ export async function runCopy(
       return { ok: false, reason: 'clipboard_error', source: extracted.source };
     }
 
-    const wordCount = countWords(markdown);
     const tokenEstimate = estimateTokens(markdown);
     safeShowToast(
-      formatCopySuccessMessage(extracted.source, wordCount, tokenEstimate),
+      formatCopySuccessMessage(extracted.source, tokenEstimate),
       'success',
       doc
     );
-    return { ok: true, source: extracted.source, wordCount, tokenEstimate };
+    return { ok: true, source: extracted.source, tokenEstimate };
   } catch (error) {
     console.warn('[page2md] Unexpected copy error:', error);
     safeShowToast('Erreur lors de la copie en Markdown.', 'error', doc);

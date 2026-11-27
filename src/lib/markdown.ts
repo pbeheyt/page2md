@@ -4,10 +4,8 @@ import type { ExtractedDocument } from '@/lib/extractor';
 import { insertInlineBoundaries } from '@/lib/markdown-inline-boundaries';
 import { ANCHOR_ONLY_LABEL_RE, computeBacktickFence } from '@/lib/markdown-syntax';
 import { convertTableToMarkdown } from '@/lib/markdown-table';
-import { collapseWhitespace, countWords } from '@/lib/text';
+import { collapseWhitespace } from '@/lib/text';
 import { cleanDocumentUrl, cleanLinkHref } from '@/lib/url';
-
-export { countWords };
 
 const CODE_LANG_RE = /(?:^|\s)(?:language-|lang-)([a-z0-9_+.#-]+)/i;
 const SAFE_LANG_TOKEN_RE = /^[a-z0-9_+.#-]+/i;

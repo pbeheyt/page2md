@@ -6,7 +6,6 @@ export interface CopyResult {
   ok: boolean;
   reason?: 'empty' | 'clipboard_error' | 'unsupported_document' | 'unexpected_error' | 'busy';
   source?: ExtractedDocument['source'];
-  wordCount?: number;
   tokenEstimate?: number;
 }
 

@@ -20,7 +20,7 @@ afterEach(() => {
 
 describe('showToast', () => {
   it('monte le toast sur documentElement et le retire automatiquement après expiration', () => {
-    showToast('Page copiée · ~12 mots', 'success', document);
+    showToast('Page copiée · ~12 tokens', 'success', document);
 
     const host = document.getElementById('page2md-toast-host');
     expect(host).not.toBeNull();
